@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import requests
+
 _cache: dict[str, tuple[Any, float]] = {}
 
 
@@ -26,6 +28,8 @@ BINANCE_OPEN_INTEREST_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/openInterest"
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
 COINMARKETCAL_EVENTS_URL = "https://developers.coinmarketcal.com/v1/events"
 COINMARKETCAL_API_KEY_ENV = "COINMARKETCAL_API_KEY"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8431698430:AAGDVRr3hAWSWbm66eJ9xOWnt-os8q-_a1o")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "843487976")
 CRYPTO_NEWS_SOURCES = (
     ("Cointelegraph", "https://cointelegraph.com/rss", 1.0),
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/", 1.2),
@@ -199,6 +203,26 @@ def fetch_json(
     except json.JSONDecodeError as error:
         print(f"Error parsing JSON from {url}: {error}")
         return None
+
+
+def send_telegram_message(message: str) -> None:
+    if TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
+        print("Telegram token not configured; skipping Telegram alert.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+    }
+
+    try:
+        response = requests.post(url, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        print(f"Error sending Telegram message: {error}")
+
 
 def get_btc_price() -> float | None:
     cache_key = "btc_price"
@@ -726,6 +750,45 @@ def print_signal_breakdown(snapshot: MarketSnapshot) -> None:
     print(f"- Binance movers: {breakdown.binance_movers:.3f}")
 
 
+def format_mover_names(coins: list[CoinMover], limit: int = 3) -> str:
+    if not coins:
+        return "- unavailable"
+
+    return "\n".join(f"- {coin.name}: {coin.change_24h:.2f}%" for coin in coins[:limit])
+
+
+def build_signal_message(snapshot: MarketSnapshot, pressure: float, confidence: float) -> str:
+    price = (
+        f"${snapshot.btc_price:,.2f}"
+        if snapshot.btc_price is not None
+        else "unavailable"
+    )
+    signal = get_signal(snapshot)
+
+    return f"""
+📊 MARKET SIGNAL
+
+BTC Price: {price}
+Overall Sentiment: {snapshot.news_sentiment:.3f}
+Market Pressure: {pressure:.3f}
+Signal Confidence: {confidence:.2f}
+
+Signal: {signal}
+
+Top Gainers:
+{format_mover_names(snapshot.gainers)}
+
+Top Losers:
+{format_mover_names(snapshot.losers)}
+
+Binance Top Gainers:
+{format_mover_names(snapshot.binance_gainers)}
+
+Binance Top Losers:
+{format_mover_names(snapshot.binance_losers)}
+""".strip()
+
+
 def print_report(snapshot: MarketSnapshot) -> None:
     pressure = compute_market_pressure(snapshot)
     confidence = compute_confidence(snapshot, pressure)
@@ -743,7 +806,9 @@ def print_report(snapshot: MarketSnapshot) -> None:
     print_signal_breakdown(snapshot)
     print(f"\nMarket pressure score: {pressure:.3f}")
     print(f"Signal confidence: {confidence:.2f}")
-    print(f"\nSignal: {get_signal(snapshot)}")
+    message = build_signal_message(snapshot, pressure, confidence)
+    print(f"\n{message}")
+    send_telegram_message(message)
 
 
 def main() -> None:

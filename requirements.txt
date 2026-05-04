@@ -1,1 +1,1 @@
-# Standard-library only.
+requests>=2.32.0
