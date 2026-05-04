@@ -206,22 +206,29 @@ def fetch_json(
 
 
 def send_telegram_message(message: str) -> None:
-    if TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
         print("Telegram token not configured; skipping Telegram alert.")
+        return
+
+    if not CHAT_ID:
+        print("Telegram chat ID not configured; skipping Telegram alert.")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
         "text": message,
-        "parse_mode": "Markdown",
     }
 
     try:
         response = requests.post(url, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
+        print("Telegram alert sent successfully.")
     except requests.RequestException as error:
-        print(f"Error sending Telegram message: {error}")
+        response_text = ""
+        if getattr(error, "response", None) is not None:
+            response_text = f" Response: {error.response.text}"
+        print(f"Error sending Telegram message: {error}.{response_text}")
 
 
 def get_btc_price() -> float | None:
