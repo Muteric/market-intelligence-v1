@@ -11,6 +11,9 @@ on:
 jobs:
   run-market-intelligence:
     runs-on: ubuntu-latest
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || '843487976' }}
 
     steps:
       - name: Check out repository

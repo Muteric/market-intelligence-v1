@@ -16,6 +16,26 @@ import requests
 _cache: dict[str, tuple[Any, float]] = {}
 
 
+def load_local_env(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+
+    with open(path, encoding="utf-8") as env_file:
+        for line in env_file:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+load_local_env()
+
+
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 BTC_PRICE_URL = f"{COINGECKO_BASE_URL}/simple/price"
 MARKET_MOVERS_URL = f"{COINGECKO_BASE_URL}/coins/markets"
@@ -28,7 +48,7 @@ BINANCE_OPEN_INTEREST_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/openInterest"
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
 COINMARKETCAL_EVENTS_URL = "https://developers.coinmarketcal.com/v1/events"
 COINMARKETCAL_API_KEY_ENV = "COINMARKETCAL_API_KEY"
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8431698430:AAGDVRr3hAWSWbm66eJ9xOWnt-os8q-_a1o")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "843487976")
 CRYPTO_NEWS_SOURCES = (
     ("Cointelegraph", "https://cointelegraph.com/rss", 1.0),
@@ -205,14 +225,14 @@ def fetch_json(
         return None
 
 
-def send_telegram_message(message: str) -> None:
+def send_telegram_message(message: str) -> bool:
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
         print("Telegram token not configured; skipping Telegram alert.")
-        return
+        return False
 
     if not CHAT_ID:
         print("Telegram chat ID not configured; skipping Telegram alert.")
-        return
+        return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -224,11 +244,13 @@ def send_telegram_message(message: str) -> None:
         response = requests.post(url, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         print("Telegram alert sent successfully.")
+        return True
     except requests.RequestException as error:
         response_text = ""
         if getattr(error, "response", None) is not None:
             response_text = f" Response: {error.response.text}"
         print(f"Error sending Telegram message: {error}.{response_text}")
+        return False
 
 
 def get_btc_price() -> float | None:
@@ -815,7 +837,8 @@ def print_report(snapshot: MarketSnapshot) -> None:
     print(f"Signal confidence: {confidence:.2f}")
     message = build_signal_message(snapshot, pressure, confidence)
     print(f"\n{message}")
-    send_telegram_message(message)
+    if not send_telegram_message(message):
+        raise SystemExit(1)
 
 
 def main() -> None:
