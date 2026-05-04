@@ -1,6 +1,9 @@
 name: Market Intelligence
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
@@ -8,10 +11,6 @@ on:
 jobs:
   run-market-intelligence:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || '843487976' }}
 
     steps:
       - name: Check out repository
@@ -23,7 +22,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run market intelligence
         run: python main.py
