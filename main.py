@@ -40,9 +40,16 @@ COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
 BTC_PRICE_URL = f"{COINGECKO_BASE_URL}/simple/price"
 MARKET_MOVERS_URL = f"{COINGECKO_BASE_URL}/coins/markets"
 BINANCE_BASE_URL = "https://api.binance.com"
+BINANCE_DATA_BASE_URL = "https://data-api.binance.vision"
 BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
-BINANCE_KLINES_URL = f"{BINANCE_BASE_URL}/api/v3/klines"
-BINANCE_24HR_TICKER_URL = f"{BINANCE_BASE_URL}/api/v3/ticker/24hr"
+BINANCE_KLINES_URLS = (
+    f"{BINANCE_BASE_URL}/api/v3/klines",
+    f"{BINANCE_DATA_BASE_URL}/api/v3/klines",
+)
+BINANCE_24HR_TICKER_URLS = (
+    f"{BINANCE_BASE_URL}/api/v3/ticker/24hr",
+    f"{BINANCE_DATA_BASE_URL}/api/v3/ticker/24hr",
+)
 BINANCE_PREMIUM_INDEX_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/premiumIndex"
 BINANCE_OPEN_INTEREST_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/openInterest"
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
@@ -225,6 +232,21 @@ def fetch_json(
         return None
 
 
+def fetch_json_with_fallbacks(
+    urls: tuple[str, ...],
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> Any | None:
+    for index, url in enumerate(urls):
+        data = fetch_json(url, params, headers)
+        if data is not None:
+            if index > 0:
+                print(f"Using fallback data source: {url}")
+            return data
+
+    return None
+
+
 def send_telegram_message(message: str) -> bool:
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
         print("Telegram token not configured; skipping Telegram alert.")
@@ -366,7 +388,7 @@ def get_market_movers(limit: int = MOVER_LIMIT) -> tuple[list[CoinMover], list[C
 def get_binance_market_movers(
     limit: int = BINANCE_MOVER_LIMIT,
 ) -> tuple[list[CoinMover], list[CoinMover]]:
-    data = fetch_json(BINANCE_24HR_TICKER_URL)
+    data = fetch_json_with_fallbacks(BINANCE_24HR_TICKER_URLS)
     if not isinstance(data, list):
         return [], []
 
@@ -513,8 +535,8 @@ def get_binance_klines(
     interval: str = BINANCE_INTERVAL,
     limit: int = BINANCE_CANDLE_LIMIT,
 ) -> list[BinanceCandle]:
-    data = fetch_json(
-        BINANCE_KLINES_URL,
+    data = fetch_json_with_fallbacks(
+        BINANCE_KLINES_URLS,
         params={"symbol": symbol, "interval": interval, "limit": limit},
     )
     if not isinstance(data, list):
