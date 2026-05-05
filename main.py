@@ -6,7 +6,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -70,6 +70,8 @@ BINANCE_SYMBOL = "BTCUSDT"
 BINANCE_INTERVAL = "1h"
 BINANCE_CANDLE_LIMIT = 24
 BINANCE_MOVER_QUOTE_ASSET = "USDT"
+ALERT_STATE_FILE = ".market_alert_state.json"
+CONFIDENCE_CHANGE_THRESHOLD = 0.15
 
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 SENTIMENT_WEIGHTS = {
@@ -157,7 +159,7 @@ class DerivativesSnapshot:
 
 
 @dataclass(frozen=True)
-class SignalBreakdown:
+class MarketBreakdown:
     news: float
     event_catalysts: float
     fear_greed: float
@@ -195,6 +197,32 @@ class MarketSnapshot:
     binance_losers: list[CoinMover]
 
 
+TrendDirection = Literal["bullish", "bearish", "neutral"]
+VolatilityScore = Literal["low", "medium", "high"]
+Decision = Literal["STRONG BUY", "BUY", "HOLD", "SELL", "AVOID MARKET"]
+
+
+@dataclass(frozen=True)
+class MarketState:
+    trend_direction: TrendDirection
+    momentum_score: float
+    sentiment_score: float
+    volatility_score: VolatilityScore
+    confidence_score: float
+
+
+@dataclass(frozen=True)
+class AlertState:
+    decision: str | None
+    confidence_score: float | None
+
+
+@dataclass(frozen=True)
+class DecisionOutcome:
+    decision: Decision
+    state: MarketState
+
+
 def fetch_url(
     url: str,
     params: dict[str, Any] | None = None,
@@ -211,8 +239,7 @@ def fetch_url(
     try:
         with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             return response.read()
-    except (HTTPError, URLError, TimeoutError) as error:
-        print(f"Error fetching {url}: {error}")
+    except (HTTPError, URLError, TimeoutError):
         return None
 
 
@@ -227,8 +254,7 @@ def fetch_json(
 
     try:
         return json.loads(content.decode("utf-8"))
-    except json.JSONDecodeError as error:
-        print(f"Error parsing JSON from {url}: {error}")
+    except json.JSONDecodeError:
         return None
 
 
@@ -237,11 +263,9 @@ def fetch_json_with_fallbacks(
     params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
 ) -> Any | None:
-    for index, url in enumerate(urls):
+    for url in urls:
         data = fetch_json(url, params, headers)
         if data is not None:
-            if index > 0:
-                print(f"Using fallback data source: {url}")
             return data
 
     return None
@@ -249,11 +273,9 @@ def fetch_json_with_fallbacks(
 
 def send_telegram_message(message: str) -> bool:
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
-        print("Telegram token not configured; skipping Telegram alert.")
         return False
 
     if not CHAT_ID:
-        print("Telegram chat ID not configured; skipping Telegram alert.")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -265,14 +287,98 @@ def send_telegram_message(message: str) -> bool:
     try:
         response = requests.post(url, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
-        print("Telegram alert sent successfully.")
         return True
-    except requests.RequestException as error:
-        response_text = ""
-        if getattr(error, "response", None) is not None:
-            response_text = f" Response: {error.response.text}"
-        print(f"Error sending Telegram message: {error}.{response_text}")
+    except requests.RequestException:
         return False
+
+
+def load_alert_state(path: str = ALERT_STATE_FILE) -> AlertState:
+    if not os.path.exists(path):
+        return AlertState(decision=None, confidence_score=None)
+
+    try:
+        with open(path, encoding="utf-8") as state_file:
+            data = json.load(state_file)
+    except (OSError, json.JSONDecodeError):
+        return AlertState(decision=None, confidence_score=None)
+
+    decision = data.get("decision")
+    if not isinstance(decision, str):
+        decision = None
+
+    confidence_score = data.get("confidence_score")
+    if not isinstance(confidence_score, (int, float)):
+        confidence_score = None
+
+    return AlertState(
+        decision=decision,
+        confidence_score=float(confidence_score) if confidence_score is not None else None,
+    )
+
+
+def save_alert_state(outcome: DecisionOutcome, path: str = ALERT_STATE_FILE) -> None:
+    payload = {
+        "decision": outcome.decision,
+        "confidence_score": round(outcome.state.confidence_score, 4),
+    }
+    with open(path, "w", encoding="utf-8") as state_file:
+        json.dump(payload, state_file, indent=2)
+        state_file.write("\n")
+
+
+def get_severity_label(confidence_score: float) -> str:
+    if confidence_score > 0.8:
+        return "\U0001F534 HIGH CONVICTION"
+    if confidence_score >= 0.6:
+        return "\U0001F7E1 MEDIUM"
+    return "\u26AA LOW"
+
+
+def has_meaningful_change(previous: AlertState, outcome: DecisionOutcome) -> bool:
+    if previous.decision is None or previous.confidence_score is None:
+        return False
+
+    decision_changed = outcome.decision != previous.decision
+    confidence_changed = (
+        abs(outcome.state.confidence_score - previous.confidence_score)
+        > CONFIDENCE_CHANGE_THRESHOLD
+    )
+    return decision_changed or confidence_changed
+
+
+def should_send_alert(previous: AlertState, outcome: DecisionOutcome) -> bool:
+    return has_meaningful_change(previous, outcome)
+
+
+def build_decision_message(outcome: DecisionOutcome, previous: AlertState) -> str:
+    state = outcome.state
+    severity = get_severity_label(state.confidence_score)
+    previous_decision = previous.decision or "NONE"
+    previous_confidence = (
+        f"{previous.confidence_score:.2f}"
+        if previous.confidence_score is not None
+        else "n/a"
+    )
+    confidence_delta = (
+        state.confidence_score - previous.confidence_score
+        if previous.confidence_score is not None
+        else 0.0
+    )
+
+    return "\n".join(
+        [
+            severity,
+            f"Decision: {outcome.decision}",
+            f"Trend: {state.trend_direction}",
+            f"Momentum: {state.momentum_score:.2f}",
+            f"Sentiment: {state.sentiment_score:.2f}",
+            f"Volatility: {state.volatility_score}",
+            f"Confidence: {state.confidence_score:.2f}",
+            f"Previous decision: {previous_decision}",
+            f"Previous confidence: {previous_confidence}",
+            f"Confidence change: {confidence_delta:+.2f}",
+        ]
+    )
 
 
 def get_btc_price() -> float | None:
@@ -307,8 +413,7 @@ def get_news_from_rss(source: str, url: str, weight: float, limit: int) -> list[
 
     try:
         root = ET.fromstring(content)
-    except ET.ParseError as error:
-        print(f"Error parsing RSS feed: {error}")
+    except ET.ParseError:
         return []
 
     items: list[NewsItem] = []
@@ -593,8 +698,8 @@ def average_mover_sentiment(gainers: list[CoinMover], losers: list[CoinMover]) -
     return clamp(average_momentum / 10)
 
 
-def get_signal_breakdown(snapshot: MarketSnapshot) -> SignalBreakdown:
-    return SignalBreakdown(
+def get_market_breakdown(snapshot: MarketSnapshot) -> MarketBreakdown:
+    return MarketBreakdown(
         news=snapshot.news_sentiment,
         event_catalysts=snapshot.event_catalyst_score,
         fear_greed=snapshot.fear_greed_sentiment,
@@ -609,7 +714,7 @@ def get_signal_breakdown(snapshot: MarketSnapshot) -> SignalBreakdown:
 
 
 def compute_market_pressure(snapshot: MarketSnapshot) -> float:
-    breakdown = get_signal_breakdown(snapshot)
+    breakdown = get_market_breakdown(snapshot)
     weights = {
         "news": 1.2,
         "event_catalysts": 1.5,
@@ -632,7 +737,7 @@ def compute_market_pressure(snapshot: MarketSnapshot) -> float:
 
 
 def compute_confidence(snapshot: MarketSnapshot, pressure: float) -> float:
-    breakdown = get_signal_breakdown(snapshot)
+    breakdown = get_market_breakdown(snapshot)
     scores = [
         breakdown.news,
         breakdown.event_catalysts,
@@ -657,19 +762,109 @@ def compute_confidence(snapshot: MarketSnapshot, pressure: float) -> float:
     return (agreement * 0.7) + (coverage * 0.3)
 
 
-def get_signal(snapshot: MarketSnapshot) -> str:
+def compute_volatility_score(candles: list[BinanceCandle]) -> VolatilityScore:
+    if len(candles) < 2:
+        return "low"
+
+    range_percentages = [
+        ((candle.high_price - candle.low_price) / candle.open_price) * 100
+        for candle in candles
+        if candle.open_price > 0
+    ]
+    if not range_percentages:
+        return "low"
+
+    first_close = candles[0].close_price
+    last_close = candles[-1].close_price
+    directional_move = (
+        abs((last_close - first_close) / first_close) * 100
+        if first_close > 0
+        else 0.0
+    )
+    average_range = sum(range_percentages) / len(range_percentages)
+    volatility = max(average_range, directional_move / 2)
+
+    if volatility >= 4.0:
+        return "high"
+    if volatility >= 1.5:
+        return "medium"
+    return "low"
+
+
+def generate_market_state(snapshot: MarketSnapshot | None = None) -> MarketState:
+    if snapshot is None:
+        snapshot = collect_market_snapshot()
+
     pressure = compute_market_pressure(snapshot)
     confidence = compute_confidence(snapshot, pressure)
+    breakdown = get_market_breakdown(snapshot)
 
-    if pressure > 0.45 and confidence > 0.65:
-        return "Strong bullish momentum; capital inflow is likely."
-    if pressure < -0.35 and confidence > 0.65:
-        return "Strong bearish pressure; risk-off conditions are likely."
+    momentum_score = clamp(
+        abs(
+            (
+                (breakdown.binance_spot * 1.4)
+                + (breakdown.market_movers * 1.0)
+                + (breakdown.binance_movers * 0.8)
+            )
+            / 3.2
+        ),
+        0.0,
+        1.0,
+    )
+    sentiment_score = clamp(
+        (
+            (breakdown.news * 1.2)
+            + (breakdown.event_catalysts * 1.5)
+            + (breakdown.fear_greed * 1.0)
+            + (breakdown.derivatives * 1.1)
+        )
+        / 4.8
+    )
+
     if pressure > 0.12:
-        return "Weak bullish bias; early accumulation is possible."
-    if pressure < -0.12:
-        return "Weak bearish bias."
-    return "Neutral or choppy market."
+        trend_direction: TrendDirection = "bullish"
+    elif pressure < -0.12:
+        trend_direction = "bearish"
+    else:
+        trend_direction = "neutral"
+
+    return MarketState(
+        trend_direction=trend_direction,
+        momentum_score=momentum_score,
+        sentiment_score=sentiment_score,
+        volatility_score=compute_volatility_score(snapshot.binance_candles),
+        confidence_score=clamp(confidence, 0.0, 1.0),
+    )
+
+
+def make_decision(state: MarketState) -> Decision:
+    if state.volatility_score == "high" and state.confidence_score < 0.5:
+        return "AVOID MARKET"
+
+    bullish_alignment = (
+        state.trend_direction == "bullish"
+        and state.sentiment_score > 0.0
+        and state.momentum_score >= 0.5
+    )
+    bearish_alignment = (
+        state.trend_direction == "bearish"
+        and state.sentiment_score < 0.0
+        and state.momentum_score >= 0.5
+    )
+
+    if state.confidence_score > 0.75 and bullish_alignment:
+        return "STRONG BUY"
+    if state.confidence_score > 0.75 and bearish_alignment:
+        return "SELL"
+    if (
+        state.trend_direction == "bullish"
+        and state.sentiment_score >= 0.0
+        and state.momentum_score >= 0.35
+        and state.confidence_score >= 0.5
+    ):
+        return "BUY"
+
+    return "HOLD"
 
 
 def collect_market_snapshot() -> MarketSnapshot:
@@ -700,171 +895,27 @@ def collect_market_snapshot() -> MarketSnapshot:
     )
 
 
-def print_price(price: float | None) -> None:
-    if price is None:
-        print("\nBTC price: unavailable")
-        return
-
-    print(f"\nBTC price: ${price:,.2f}")
-
-
-def print_news_sentiment(news_items: list[NewsItem]) -> None:
-    print("\nNews and sentiment:")
-    if not news_items:
-        print("No news data available.")
-        return
-
-    for item in news_items:
-        print(
-            f"- [{item.source}] {item.title} | "
-            f"sentiment: {analyze_sentiment(item.title):.3f}"
-        )
-
-    print(f"\nOverall sentiment: {overall_sentiment(news_items):.3f}")
-
-
-def print_event_catalysts(events: list[str], score: float) -> None:
-    print("\nEvent catalysts:")
-    if not events:
-        print(f"No CoinMarketCal events available. Set {COINMARKETCAL_API_KEY_ENV} to enable.")
-        return
-
-    for event in events:
-        print(f"- {event}")
-    print(f"Event catalyst score: {score:.3f}")
-
-
-def print_fear_greed(snapshot: FearGreedSnapshot, sentiment: float) -> None:
-    print("\nFear and greed:")
-    if snapshot.value is None:
-        print("Fear and greed data unavailable.")
-        return
-
-    classification = snapshot.classification or "unclassified"
-    print(f"- Index: {snapshot.value} ({classification})")
-    print(f"- Regime sentiment: {sentiment:.3f}")
-
-
-def print_derivatives(snapshot: DerivativesSnapshot, sentiment: float) -> None:
-    print(f"\nBinance derivatives ({BINANCE_SYMBOL}):")
-    if snapshot.funding_rate is None and snapshot.open_interest is None:
-        print("Derivatives data unavailable.")
-        return
-
-    if snapshot.funding_rate is not None:
-        print(f"- Funding rate: {snapshot.funding_rate * 100:.4f}%")
-    if snapshot.open_interest is not None:
-        print(f"- Open interest: {snapshot.open_interest:,.3f} {BINANCE_SYMBOL.removesuffix('USDT')}")
-    print(f"- Derivatives sentiment: {sentiment:.3f}")
-
-
-def print_market_movers(title: str, coins: list[CoinMover]) -> None:
-    print(f"\n{title}:")
-    if not coins:
-        print("No market mover data available.")
-        return
-
-    for coin in coins:
-        print(f"- {coin.name}: {coin.change_24h:.2f}%")
-
-
-def print_binance_sentiment(candles: list[BinanceCandle], sentiment: float) -> None:
-    print(f"\nBinance chart sentiment ({BINANCE_SYMBOL}, {BINANCE_INTERVAL}):")
-    if len(candles) < 2:
-        print("Not enough Binance candle data available.")
-        return
-
-    first_close = candles[0].close_price
-    last_close = candles[-1].close_price
-    price_change_pct = ((last_close - first_close) / first_close) * 100
-    green_candles = sum(
-        1
-        for candle in candles
-        if candle.close_price > candle.open_price
+def evaluate_market(snapshot: MarketSnapshot | None = None) -> DecisionOutcome:
+    state = generate_market_state(snapshot)
+    return DecisionOutcome(
+        decision=make_decision(state),
+        state=state,
     )
 
-    print(f"- Candles analyzed: {len(candles)}")
-    print(f"- Price change: {price_change_pct:.2f}%")
-    print(f"- Green candles: {green_candles}/{len(candles)}")
-    print(f"- Binance sentiment: {sentiment:.3f}")
 
+def run_decision_engine() -> DecisionOutcome:
+    outcome = evaluate_market()
+    previous = load_alert_state()
 
-def print_signal_breakdown(snapshot: MarketSnapshot) -> None:
-    breakdown = get_signal_breakdown(snapshot)
-    print("\nSignal components:")
-    print(f"- News sentiment: {breakdown.news:.3f}")
-    print(f"- Event catalysts: {breakdown.event_catalysts:.3f}")
-    print(f"- Fear/greed regime: {breakdown.fear_greed:.3f}")
-    print(f"- Binance spot momentum: {breakdown.binance_spot:.3f}")
-    print(f"- Binance derivatives: {breakdown.derivatives:.3f}")
-    print(f"- Broad market movers: {breakdown.market_movers:.3f}")
-    print(f"- Binance movers: {breakdown.binance_movers:.3f}")
+    if should_send_alert(previous, outcome):
+        send_telegram_message(build_decision_message(outcome, previous))
 
-
-def format_mover_names(coins: list[CoinMover], limit: int = 3) -> str:
-    if not coins:
-        return "- unavailable"
-
-    return "\n".join(f"- {coin.name}: {coin.change_24h:.2f}%" for coin in coins[:limit])
-
-
-def build_signal_message(snapshot: MarketSnapshot, pressure: float, confidence: float) -> str:
-    price = (
-        f"${snapshot.btc_price:,.2f}"
-        if snapshot.btc_price is not None
-        else "unavailable"
-    )
-    signal = get_signal(snapshot)
-
-    return f"""
-📊 MARKET SIGNAL
-
-BTC Price: {price}
-Overall Sentiment: {snapshot.news_sentiment:.3f}
-Market Pressure: {pressure:.3f}
-Signal Confidence: {confidence:.2f}
-
-Signal: {signal}
-
-Top Gainers:
-{format_mover_names(snapshot.gainers)}
-
-Top Losers:
-{format_mover_names(snapshot.losers)}
-
-Binance Top Gainers:
-{format_mover_names(snapshot.binance_gainers)}
-
-Binance Top Losers:
-{format_mover_names(snapshot.binance_losers)}
-""".strip()
-
-
-def print_report(snapshot: MarketSnapshot) -> None:
-    pressure = compute_market_pressure(snapshot)
-    confidence = compute_confidence(snapshot, pressure)
-
-    print_price(snapshot.btc_price)
-    print_news_sentiment(snapshot.news_items)
-    print_event_catalysts(snapshot.event_catalysts, snapshot.event_catalyst_score)
-    print_fear_greed(snapshot.fear_greed, snapshot.fear_greed_sentiment)
-    print_binance_sentiment(snapshot.binance_candles, snapshot.binance_sentiment)
-    print_derivatives(snapshot.derivatives, snapshot.derivatives_sentiment)
-    print_market_movers("Top gainers", snapshot.gainers)
-    print_market_movers("Top losers", snapshot.losers)
-    print_market_movers("Binance top gainers", snapshot.binance_gainers)
-    print_market_movers("Binance top losers", snapshot.binance_losers)
-    print_signal_breakdown(snapshot)
-    print(f"\nMarket pressure score: {pressure:.3f}")
-    print(f"Signal confidence: {confidence:.2f}")
-    message = build_signal_message(snapshot, pressure, confidence)
-    print(f"\n{message}")
-    if not send_telegram_message(message):
-        raise SystemExit(1)
+    save_alert_state(outcome)
+    return outcome
 
 
 def main() -> None:
-    print_report(collect_market_snapshot())
+    print(run_decision_engine().decision)
 
 
 if __name__ == "__main__":
