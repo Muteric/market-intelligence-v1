@@ -1,922 +1,364 @@
-from __future__ import annotations
+"""
+AI Trading Intelligence Bot v2.0 - Main Application
+Comprehensive trading system for BTCUSD and XAUUSD with modular architecture.
+"""
 
 import json
-import os
-import re
+import logging
 import time
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from typing import Any, Literal
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 
-import requests
+from configuration_manager import ConfigurationManager, AppConfig
+from asset_manager import AssetManager
+from market_analyzer import MarketAnalyzer, MarketAnalysis
+from signal_engine import SignalEngine, SignalResult
+from trade_manager import TradeManager
+from portfolio_manager import PortfolioManager
+from profit_calculator import ProfitCalculator
+from risk_manager import RiskManager
+from trade_storage import TradeStorage
+from performance_tracker import PerformanceTracker
+from telegram_formatter import TelegramFormatter, ReportFormat
 
-_cache: dict[str, tuple[Any, float]] = {}
-
-
-def load_local_env(path: str = ".env") -> None:
-    if not os.path.exists(path):
-        return
-
-    with open(path, encoding="utf-8") as env_file:
-        for line in env_file:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip("'\"")
-            if key and key not in os.environ:
-                os.environ[key] = value
-
-
-load_local_env()
-
-
-COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
-BTC_PRICE_URL = f"{COINGECKO_BASE_URL}/simple/price"
-MARKET_MOVERS_URL = f"{COINGECKO_BASE_URL}/coins/markets"
-BINANCE_BASE_URL = "https://api.binance.com"
-BINANCE_DATA_BASE_URL = "https://data-api.binance.vision"
-BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
-BINANCE_KLINES_URLS = (
-    f"{BINANCE_BASE_URL}/api/v3/klines",
-    f"{BINANCE_DATA_BASE_URL}/api/v3/klines",
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('trading_bot.log'),
+        logging.StreamHandler()
+    ]
 )
-BINANCE_24HR_TICKER_URLS = (
-    f"{BINANCE_BASE_URL}/api/v3/ticker/24hr",
-    f"{BINANCE_DATA_BASE_URL}/api/v3/ticker/24hr",
-)
-BINANCE_PREMIUM_INDEX_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/premiumIndex"
-BINANCE_OPEN_INTEREST_URL = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/openInterest"
-FEAR_GREED_URL = "https://api.alternative.me/fng/"
-COINMARKETCAL_EVENTS_URL = "https://developers.coinmarketcal.com/v1/events"
-COINMARKETCAL_API_KEY_ENV = "COINMARKETCAL_API_KEY"
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "843487976")
-CRYPTO_NEWS_SOURCES = (
-    ("Cointelegraph", "https://cointelegraph.com/rss", 1.0),
-    ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/", 1.2),
-)
-REQUEST_TIMEOUT_SECONDS = 10
-NEWS_LIMIT_PER_SOURCE = 5
-EVENT_LIMIT = 5
-MOVER_LIMIT = 3
-BINANCE_MOVER_LIMIT = 5
-BINANCE_SYMBOL = "BTCUSDT"
-BINANCE_INTERVAL = "1h"
-BINANCE_CANDLE_LIMIT = 24
-BINANCE_MOVER_QUOTE_ASSET = "USDT"
-ALERT_STATE_FILE = ".market_alert_state.json"
-CONFIDENCE_CHANGE_THRESHOLD = 0.15
-
-WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
-SENTIMENT_WEIGHTS = {
-    "accumulation": 0.6,
-    "advance": 0.6,
-    "approval": 0.5,
-    "ath": 0.8,
-    "breakout": 0.8,
-    "bull": 0.7,
-    "bullish": 1.0,
-    "climb": 0.6,
-    "climbs": 0.6,
-    "gain": 0.7,
-    "gains": 0.7,
-    "growth": 0.5,
-    "high": 0.4,
-    "inflow": 0.7,
-    "inflows": 0.7,
-    "jump": 0.7,
-    "jumps": 0.7,
-    "opportunity": 0.4,
-    "positive": 0.6,
-    "rally": 0.8,
-    "recover": 0.6,
-    "recovery": 0.6,
-    "record": 0.5,
-    "rise": 0.6,
-    "rises": 0.6,
-    "strong": 0.5,
-    "surge": 0.8,
-    "surges": 0.8,
-    "up": 0.4,
-    "bear": -0.7,
-    "bearish": -1.0,
-    "block": -0.3,
-    "blocked": -0.4,
-    "crackdown": -0.8,
-    "crash": -1.0,
-    "decline": -0.6,
-    "drop": -0.7,
-    "drops": -0.7,
-    "exploit": -0.9,
-    "fall": -0.6,
-    "falls": -0.6,
-    "frozen": -0.5,
-    "hack": -0.9,
-    "lawsuit": -0.6,
-    "loss": -0.7,
-    "losses": -0.7,
-    "negative": -0.6,
-    "outflow": -0.7,
-    "outflows": -0.7,
-    "plunge": -0.9,
-    "risk": -0.5,
-    "scam": -0.9,
-    "sell": -0.5,
-    "slump": -0.8,
-    "weak": -0.5,
-}
-
-
-@dataclass(frozen=True)
-class CoinMover:
-    name: str
-    change_24h: float
-
-
-@dataclass(frozen=True)
-class NewsItem:
-    source: str
-    title: str
-    weight: float
-
-
-@dataclass(frozen=True)
-class FearGreedSnapshot:
-    value: int | None
-    classification: str | None
-
-
-@dataclass(frozen=True)
-class DerivativesSnapshot:
-    funding_rate: float | None
-    open_interest: float | None
-
-
-@dataclass(frozen=True)
-class MarketBreakdown:
-    news: float
-    event_catalysts: float
-    fear_greed: float
-    binance_spot: float
-    derivatives: float
-    market_movers: float
-    binance_movers: float
-
-
-@dataclass(frozen=True)
-class BinanceCandle:
-    open_price: float
-    high_price: float
-    low_price: float
-    close_price: float
-    volume: float
-
-
-@dataclass(frozen=True)
-class MarketSnapshot:
-    btc_price: float | None
-    news_items: list[NewsItem]
-    news_sentiment: float
-    event_catalysts: list[str]
-    event_catalyst_score: float
-    fear_greed: FearGreedSnapshot
-    fear_greed_sentiment: float
-    derivatives: DerivativesSnapshot
-    derivatives_sentiment: float
-    binance_sentiment: float
-    binance_candles: list[BinanceCandle]
-    gainers: list[CoinMover]
-    losers: list[CoinMover]
-    binance_gainers: list[CoinMover]
-    binance_losers: list[CoinMover]
-
-
-TrendDirection = Literal["bullish", "bearish", "neutral"]
-VolatilityScore = Literal["low", "medium", "high"]
-Decision = Literal["STRONG BUY", "BUY", "HOLD", "SELL", "AVOID MARKET"]
-
-
-@dataclass(frozen=True)
-class MarketState:
-    trend_direction: TrendDirection
-    momentum_score: float
-    sentiment_score: float
-    volatility_score: VolatilityScore
-    confidence_score: float
-
-
-@dataclass(frozen=True)
-class AlertState:
-    decision: str | None
-    confidence_score: float | None
-
-
-@dataclass(frozen=True)
-class DecisionOutcome:
-    decision: Decision
-    state: MarketState
-
-
-def fetch_url(
-    url: str,
-    params: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-) -> bytes | None:
-    if params:
-        url = f"{url}?{urlencode(params)}"
-
-    request_headers = {"User-Agent": "market-intelligence/1.0"}
-    if headers:
-        request_headers.update(headers)
-
-    request = Request(url, headers=request_headers)
-    try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            return response.read()
-    except (HTTPError, URLError, TimeoutError):
-        return None
-
-
-def fetch_json(
-    url: str,
-    params: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-) -> Any | None:
-    content = fetch_url(url, params, headers)
-    if content is None:
-        return None
-
-    try:
-        return json.loads(content.decode("utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-
-def fetch_json_with_fallbacks(
-    urls: tuple[str, ...],
-    params: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-) -> Any | None:
-    for url in urls:
-        data = fetch_json(url, params, headers)
-        if data is not None:
-            return data
-
-    return None
-
-
-def send_telegram_message(message: str) -> bool:
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_NEW_BOT_TOKEN":
-        return False
-
-    if not CHAT_ID:
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-    }
-
-    try:
-        response = requests.post(url, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
-        response.raise_for_status()
-        return True
-    except requests.RequestException:
-        return False
-
-
-def load_alert_state(path: str = ALERT_STATE_FILE) -> AlertState:
-    if not os.path.exists(path):
-        return AlertState(decision=None, confidence_score=None)
-
-    try:
-        with open(path, encoding="utf-8") as state_file:
-            data = json.load(state_file)
-    except (OSError, json.JSONDecodeError):
-        return AlertState(decision=None, confidence_score=None)
-
-    decision = data.get("decision")
-    if not isinstance(decision, str):
-        decision = None
-
-    confidence_score = data.get("confidence_score")
-    if not isinstance(confidence_score, (int, float)):
-        confidence_score = None
-
-    return AlertState(
-        decision=decision,
-        confidence_score=float(confidence_score) if confidence_score is not None else None,
-    )
-
-
-def save_alert_state(outcome: DecisionOutcome, path: str = ALERT_STATE_FILE) -> None:
-    payload = {
-        "decision": outcome.decision,
-        "confidence_score": round(outcome.state.confidence_score, 4),
-    }
-    with open(path, "w", encoding="utf-8") as state_file:
-        json.dump(payload, state_file, indent=2)
-        state_file.write("\n")
-
-
-def get_severity_label(confidence_score: float) -> str:
-    if confidence_score > 0.8:
-        return "\U0001F534 HIGH CONVICTION"
-    if confidence_score >= 0.6:
-        return "\U0001F7E1 MEDIUM"
-    return "\u26AA LOW"
-
-
-def has_meaningful_change(previous: AlertState, outcome: DecisionOutcome) -> bool:
-    if previous.decision is None or previous.confidence_score is None:
-        return False
-
-    decision_changed = outcome.decision != previous.decision
-    confidence_changed = (
-        abs(outcome.state.confidence_score - previous.confidence_score)
-        > CONFIDENCE_CHANGE_THRESHOLD
-    )
-    return decision_changed or confidence_changed
-
-
-def should_send_alert(previous: AlertState, outcome: DecisionOutcome) -> bool:
-    return has_meaningful_change(previous, outcome)
-
-
-def build_decision_message(outcome: DecisionOutcome, previous: AlertState) -> str:
-    state = outcome.state
-    severity = get_severity_label(state.confidence_score)
-    previous_decision = previous.decision or "NONE"
-    previous_confidence = (
-        f"{previous.confidence_score:.2f}"
-        if previous.confidence_score is not None
-        else "n/a"
-    )
-    confidence_delta = (
-        state.confidence_score - previous.confidence_score
-        if previous.confidence_score is not None
-        else 0.0
-    )
-
-    return "\n".join(
-        [
-            severity,
-            f"Decision: {outcome.decision}",
-            f"Trend: {state.trend_direction}",
-            f"Momentum: {state.momentum_score:.2f}",
-            f"Sentiment: {state.sentiment_score:.2f}",
-            f"Volatility: {state.volatility_score}",
-            f"Confidence: {state.confidence_score:.2f}",
-            f"Previous decision: {previous_decision}",
-            f"Previous confidence: {previous_confidence}",
-            f"Confidence change: {confidence_delta:+.2f}",
-        ]
-    )
-
-
-def get_btc_price() -> float | None:
-    cache_key = "btc_price"
-
-    # Use cached value for 60 seconds.
-    if cache_key in _cache:
-        value, timestamp = _cache[cache_key]
-        if time.time() - timestamp < 60:
-            return value
-
-    data = fetch_json(
-        BTC_PRICE_URL,
-        params={"ids": "bitcoin", "vs_currencies": "usd"},
-    )
-    if not isinstance(data, dict):
-        return _cache.get(cache_key, (None, 0.0))[0]
-
-    price = data.get("bitcoin", {}).get("usd")
-    if not isinstance(price, (int, float)):
-        return _cache.get(cache_key, (None, 0.0))[0]
-
-    price = float(price)
-    _cache[cache_key] = (price, time.time())
-    return price
-
-
-def get_news_from_rss(source: str, url: str, weight: float, limit: int) -> list[NewsItem]:
-    content = fetch_url(url)
-    if content is None:
-        return []
-
-    try:
-        root = ET.fromstring(content)
-    except ET.ParseError:
-        return []
-
-    items: list[NewsItem] = []
-    for item in root.findall("./channel/item"):
-        title = item.findtext("title", default="").strip()
-        if title:
-            items.append(NewsItem(source=source, title=title, weight=weight))
-        if len(items) == limit:
-            break
-
-    return items
-
-
-def get_crypto_news(limit_per_source: int = NEWS_LIMIT_PER_SOURCE) -> list[NewsItem]:
-    news_items: list[NewsItem] = []
-    for source, url, weight in CRYPTO_NEWS_SOURCES:
-        news_items.extend(get_news_from_rss(source, url, weight, limit_per_source))
-    return news_items
-
-
-def analyze_sentiment(text: str) -> float:
-    weights = [
-        SENTIMENT_WEIGHTS[word.lower()]
-        for word in WORD_RE.findall(text)
-        if word.lower() in SENTIMENT_WEIGHTS
-    ]
-    if not weights:
-        return 0.0
-
-    return sum(weights) / len(weights)
-
-
-def clamp(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
-    return max(lower, min(upper, value))
-
-
-def overall_sentiment(news_items: list[NewsItem]) -> float:
-    if not news_items:
-        return 0.0
-
-    weighted_scores = [
-        analyze_sentiment(item.title) * item.weight
-        for item in news_items
-    ]
-    total_weight = sum(item.weight for item in news_items)
-    return sum(weighted_scores) / total_weight if total_weight else 0.0
-
-
-def get_market_movers(limit: int = MOVER_LIMIT) -> tuple[list[CoinMover], list[CoinMover]]:
-    data = fetch_json(
-        MARKET_MOVERS_URL,
-        params={
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 20,
-            "page": 1,
-        },
-    )
-    if not isinstance(data, list):
-        return [], []
-
-    coins: list[CoinMover] = []
-    for coin in data:
-        if not isinstance(coin, dict):
-            continue
-
-        name = coin.get("name")
-        change = coin.get("price_change_percentage_24h")
-        if isinstance(name, str) and isinstance(change, (int, float)):
-            coins.append(CoinMover(name=name, change_24h=float(change)))
-
-    gainers = sorted(coins, key=lambda coin: coin.change_24h, reverse=True)[:limit]
-    losers = sorted(coins, key=lambda coin: coin.change_24h)[:limit]
-    return gainers, losers
-
-
-def get_binance_market_movers(
-    limit: int = BINANCE_MOVER_LIMIT,
-) -> tuple[list[CoinMover], list[CoinMover]]:
-    data = fetch_json_with_fallbacks(BINANCE_24HR_TICKER_URLS)
-    if not isinstance(data, list):
-        return [], []
-
-    coins: list[CoinMover] = []
-    for ticker in data:
-        if not isinstance(ticker, dict):
-            continue
-
-        symbol = ticker.get("symbol")
-        change = ticker.get("priceChangePercent")
-        if not isinstance(symbol, str) or not symbol.endswith(BINANCE_MOVER_QUOTE_ASSET):
-            continue
-
-        try:
-            coins.append(CoinMover(name=symbol, change_24h=float(change)))
-        except (TypeError, ValueError):
-            continue
-
-    gainers = sorted(coins, key=lambda coin: coin.change_24h, reverse=True)[:limit]
-    losers = sorted(coins, key=lambda coin: coin.change_24h)[:limit]
-    return gainers, losers
-
-
-def get_fear_greed_snapshot() -> FearGreedSnapshot:
-    data = fetch_json(FEAR_GREED_URL, params={"limit": 1, "format": "json"})
-    if not isinstance(data, dict):
-        return FearGreedSnapshot(value=None, classification=None)
-
-    values = data.get("data")
-    if not isinstance(values, list) or not values:
-        return FearGreedSnapshot(value=None, classification=None)
-
-    latest = values[0]
-    if not isinstance(latest, dict):
-        return FearGreedSnapshot(value=None, classification=None)
-
-    try:
-        value = int(latest.get("value"))
-    except (TypeError, ValueError):
-        value = None
-
-    classification = latest.get("value_classification")
-    if not isinstance(classification, str):
-        classification = None
-
-    return FearGreedSnapshot(value=value, classification=classification)
-
-
-def analyze_fear_greed(snapshot: FearGreedSnapshot) -> float:
-    if snapshot.value is None:
-        return 0.0
-
-    # Extreme fear confirms downside risk; extreme greed warns of crowded longs.
-    if snapshot.value <= 20:
-        return -0.6
-    if snapshot.value <= 35:
-        return -0.3
-    if snapshot.value >= 80:
-        return -0.2
-    if snapshot.value >= 65:
-        return 0.2
-    return 0.0
-
-
-def get_derivatives_snapshot(symbol: str = BINANCE_SYMBOL) -> DerivativesSnapshot:
-    premium_data = fetch_json(BINANCE_PREMIUM_INDEX_URL, params={"symbol": symbol})
-    open_interest_data = fetch_json(BINANCE_OPEN_INTEREST_URL, params={"symbol": symbol})
-
-    funding_rate: float | None = None
-    if isinstance(premium_data, dict):
-        try:
-            funding_rate = float(premium_data.get("lastFundingRate"))
-        except (TypeError, ValueError):
-            funding_rate = None
-
-    open_interest: float | None = None
-    if isinstance(open_interest_data, dict):
-        try:
-            open_interest = float(open_interest_data.get("openInterest"))
-        except (TypeError, ValueError):
-            open_interest = None
-
-    return DerivativesSnapshot(
-        funding_rate=funding_rate,
-        open_interest=open_interest,
-    )
-
-
-def analyze_derivatives(snapshot: DerivativesSnapshot, spot_sentiment: float) -> float:
-    if snapshot.funding_rate is None:
-        return 0.0
-
-    funding_pct = snapshot.funding_rate * 100
-    if spot_sentiment > 0 and funding_pct < 0.03:
-        return 0.25
-    if spot_sentiment > 0 and funding_pct > 0.08:
-        return -0.35
-    if spot_sentiment < 0 and funding_pct < -0.03:
-        return -0.25
-    if spot_sentiment < 0 and funding_pct > 0:
-        return 0.15
-    return 0.0
-
-
-def get_event_catalysts(limit: int = EVENT_LIMIT) -> tuple[list[str], float]:
-    api_key = os.getenv(COINMARKETCAL_API_KEY_ENV)
-    if not api_key:
-        return [], 0.0
-
-    data = fetch_json(
-        COINMARKETCAL_EVENTS_URL,
-        params={
-            "max": limit,
-            "sortBy": "hot_events",
-            "showOnly": "hot_events",
-        },
-        headers={"x-api-key": api_key},
-    )
-    if not isinstance(data, list):
-        return [], 0.0
-
-    events: list[str] = []
-    scores: list[float] = []
-    for event in data:
-        if not isinstance(event, dict):
-            continue
-
-        title = event.get("title") or event.get("name")
-        if isinstance(title, dict):
-            title = title.get("en")
-        if isinstance(title, str):
-            events.append(title)
-
-        score = event.get("score") or event.get("confidence") or event.get("votes")
-        if isinstance(score, (int, float)):
-            scores.append(min(float(score) / 100, 1.0))
-
-    catalyst_score = sum(scores) / len(scores) if scores else 0.0
-    return events[:limit], catalyst_score
-
-
-def get_binance_klines(
-    symbol: str = BINANCE_SYMBOL,
-    interval: str = BINANCE_INTERVAL,
-    limit: int = BINANCE_CANDLE_LIMIT,
-) -> list[BinanceCandle]:
-    data = fetch_json_with_fallbacks(
-        BINANCE_KLINES_URLS,
-        params={"symbol": symbol, "interval": interval, "limit": limit},
-    )
-    if not isinstance(data, list):
-        return []
-
-    candles: list[BinanceCandle] = []
-    for item in data:
-        if not isinstance(item, list) or len(item) < 6:
-            continue
-
-        try:
-            candles.append(
-                BinanceCandle(
-                    open_price=float(item[1]),
-                    high_price=float(item[2]),
-                    low_price=float(item[3]),
-                    close_price=float(item[4]),
-                    volume=float(item[5]),
-                )
-            )
-        except (TypeError, ValueError):
-            continue
-
-    return candles
-
-
-def analyze_binance_sentiment(candles: list[BinanceCandle]) -> float:
-    if len(candles) < 2:
-        return 0.0
-
-    first_close = candles[0].close_price
-    last_close = candles[-1].close_price
-    if first_close <= 0:
-        return 0.0
-
-    price_change_pct = ((last_close - first_close) / first_close) * 100
-    green_candles = sum(
-        1
-        for candle in candles
-        if candle.close_price > candle.open_price
-    )
-    green_ratio = green_candles / len(candles)
-
-    return (price_change_pct / 10) + (green_ratio - 0.5)
-
-
-def average_mover_sentiment(gainers: list[CoinMover], losers: list[CoinMover]) -> float:
-    mover_changes = [coin.change_24h for coin in gainers + losers]
-    average_momentum = (
-        sum(mover_changes) / len(mover_changes)
-        if mover_changes
-        else 0.0
-    )
-    return clamp(average_momentum / 10)
-
-
-def get_market_breakdown(snapshot: MarketSnapshot) -> MarketBreakdown:
-    return MarketBreakdown(
-        news=snapshot.news_sentiment,
-        event_catalysts=snapshot.event_catalyst_score,
-        fear_greed=snapshot.fear_greed_sentiment,
-        binance_spot=snapshot.binance_sentiment,
-        derivatives=snapshot.derivatives_sentiment,
-        market_movers=average_mover_sentiment(snapshot.gainers, snapshot.losers),
-        binance_movers=average_mover_sentiment(
-            snapshot.binance_gainers,
-            snapshot.binance_losers,
-        ),
-    )
-
-
-def compute_market_pressure(snapshot: MarketSnapshot) -> float:
-    breakdown = get_market_breakdown(snapshot)
-    weights = {
-        "news": 1.2,
-        "event_catalysts": 1.5,
-        "fear_greed": 1.0,
-        "binance_spot": 1.4,
-        "derivatives": 1.1,
-        "market_movers": 1.0,
-        "binance_movers": 0.8,
-    }
-    weighted_score = (
-        breakdown.news * weights["news"]
-        + breakdown.event_catalysts * weights["event_catalysts"]
-        + breakdown.fear_greed * weights["fear_greed"]
-        + breakdown.binance_spot * weights["binance_spot"]
-        + breakdown.derivatives * weights["derivatives"]
-        + breakdown.market_movers * weights["market_movers"]
-        + breakdown.binance_movers * weights["binance_movers"]
-    )
-    return weighted_score / sum(weights.values())
-
-
-def compute_confidence(snapshot: MarketSnapshot, pressure: float) -> float:
-    breakdown = get_market_breakdown(snapshot)
-    scores = [
-        breakdown.news,
-        breakdown.event_catalysts,
-        breakdown.fear_greed,
-        breakdown.binance_spot,
-        breakdown.derivatives,
-        breakdown.market_movers,
-        breakdown.binance_movers,
-    ]
-    active_scores = [score for score in scores if abs(score) >= 0.05]
-    if not active_scores:
-        return 0.0
-
-    pressure_direction = 1 if pressure > 0 else -1
-    aligned = [
-        score for score in active_scores
-        if (score > 0 and pressure_direction > 0)
-        or (score < 0 and pressure_direction < 0)
-    ]
-    agreement = len(aligned) / len(active_scores)
-    coverage = len(active_scores) / len(scores)
-    return (agreement * 0.7) + (coverage * 0.3)
-
-
-def compute_volatility_score(candles: list[BinanceCandle]) -> VolatilityScore:
-    if len(candles) < 2:
-        return "low"
-
-    range_percentages = [
-        ((candle.high_price - candle.low_price) / candle.open_price) * 100
-        for candle in candles
-        if candle.open_price > 0
-    ]
-    if not range_percentages:
-        return "low"
-
-    first_close = candles[0].close_price
-    last_close = candles[-1].close_price
-    directional_move = (
-        abs((last_close - first_close) / first_close) * 100
-        if first_close > 0
-        else 0.0
-    )
-    average_range = sum(range_percentages) / len(range_percentages)
-    volatility = max(average_range, directional_move / 2)
-
-    if volatility >= 4.0:
-        return "high"
-    if volatility >= 1.5:
-        return "medium"
-    return "low"
-
-
-def generate_market_state(snapshot: MarketSnapshot | None = None) -> MarketState:
-    if snapshot is None:
-        snapshot = collect_market_snapshot()
-
-    pressure = compute_market_pressure(snapshot)
-    confidence = compute_confidence(snapshot, pressure)
-    breakdown = get_market_breakdown(snapshot)
-
-    momentum_score = clamp(
-        abs(
-            (
-                (breakdown.binance_spot * 1.4)
-                + (breakdown.market_movers * 1.0)
-                + (breakdown.binance_movers * 0.8)
-            )
-            / 3.2
-        ),
-        0.0,
-        1.0,
-    )
-    sentiment_score = clamp(
-        (
-            (breakdown.news * 1.2)
-            + (breakdown.event_catalysts * 1.5)
-            + (breakdown.fear_greed * 1.0)
-            + (breakdown.derivatives * 1.1)
+logger = logging.getLogger(__name__)
+
+class AITradingIntelligenceBot:
+    """Main AI Trading Intelligence Bot application"""
+    
+    def __init__(self, config_file: str = "app_config.json"):
+        self.config_manager = ConfigurationManager(config_file)
+        self.config = self.config_manager.get_config()
+        
+        # Initialize core components
+        self.asset_manager = AssetManager()
+        self.market_analyzers: Dict[str, MarketAnalyzer] = {}
+        self.signal_engine: Optional[SignalEngine] = None
+        self.trade_manager: Optional[TradeManager] = None
+        self.portfolio_manager: Optional[PortfolioManager] = None
+        self.profit_calculator: Optional[ProfitCalculator] = None
+        self.risk_manager: Optional[RiskManager] = None
+        self.trade_storage: Optional[TradeStorage] = None
+        self.performance_tracker: Optional[PerformanceTracker] = None
+        self.telegram_formatter: Optional[TelegramFormatter] = None
+        
+        # Initialize components
+        self._initialize_components()
+        
+        # Set up monitoring
+        self.last_scan_time = datetime.now(timezone.utc)
+        self.scan_interval = self.config.system.alert_state_file  # Using as placeholder
+        
+        logger.info("AI Trading Intelligence Bot initialized successfully")
+    
+    def _initialize_components(self) -> None:
+        """Initialize all components"""
+        # Initialize market analyzers for each asset
+        for symbol in self.config.assets:
+            asset_config = self.config_manager.get_asset_config(symbol)
+            if asset_config and asset_config.enabled:
+                self.market_analyzers[symbol] = MarketAnalyzer(asset_config)
+        
+        # Initialize trade manager
+        self.trade_manager = TradeManager(
+            self.asset_manager,
+            self.config.portfolio,
+            self.config.trading
         )
-        / 4.8
-    )
-
-    if pressure > 0.12:
-        trend_direction: TrendDirection = "bullish"
-    elif pressure < -0.12:
-        trend_direction = "bearish"
-    else:
-        trend_direction = "neutral"
-
-    return MarketState(
-        trend_direction=trend_direction,
-        momentum_score=momentum_score,
-        sentiment_score=sentiment_score,
-        volatility_score=compute_volatility_score(snapshot.binance_candles),
-        confidence_score=clamp(confidence, 0.0, 1.0),
-    )
-
-
-def make_decision(state: MarketState) -> Decision:
-    if state.volatility_score == "high" and state.confidence_score < 0.5:
-        return "AVOID MARKET"
-
-    bullish_alignment = (
-        state.trend_direction == "bullish"
-        and state.sentiment_score > 0.0
-        and state.momentum_score >= 0.5
-    )
-    bearish_alignment = (
-        state.trend_direction == "bearish"
-        and state.sentiment_score < 0.0
-        and state.momentum_score >= 0.5
-    )
-
-    if state.confidence_score > 0.75 and bullish_alignment:
-        return "STRONG BUY"
-    if state.confidence_score > 0.75 and bearish_alignment:
-        return "SELL"
-    if (
-        state.trend_direction == "bullish"
-        and state.sentiment_score >= 0.0
-        and state.momentum_score >= 0.35
-        and state.confidence_score >= 0.5
-    ):
-        return "BUY"
-
-    return "HOLD"
-
-
-def collect_market_snapshot() -> MarketSnapshot:
-    news_items = get_crypto_news()
-    binance_candles = get_binance_klines()
-    binance_sentiment = analyze_binance_sentiment(binance_candles)
-    fear_greed = get_fear_greed_snapshot()
-    derivatives = get_derivatives_snapshot()
-    gainers, losers = get_market_movers()
-    binance_gainers, binance_losers = get_binance_market_movers()
-    event_catalysts, event_catalyst_score = get_event_catalysts()
-    return MarketSnapshot(
-        btc_price=get_btc_price(),
-        news_items=news_items,
-        news_sentiment=overall_sentiment(news_items),
-        event_catalysts=event_catalysts,
-        event_catalyst_score=event_catalyst_score,
-        fear_greed=fear_greed,
-        fear_greed_sentiment=analyze_fear_greed(fear_greed),
-        derivatives=derivatives,
-        derivatives_sentiment=analyze_derivatives(derivatives, binance_sentiment),
-        binance_sentiment=binance_sentiment,
-        binance_candles=binance_candles,
-        gainers=gainers,
-        losers=losers,
-        binance_gainers=binance_gainers,
-        binance_losers=binance_losers,
-    )
-
-
-def evaluate_market(snapshot: MarketSnapshot | None = None) -> DecisionOutcome:
-    state = generate_market_state(snapshot)
-    return DecisionOutcome(
-        decision=make_decision(state),
-        state=state,
-    )
-
-
-def run_decision_engine() -> DecisionOutcome:
-    outcome = evaluate_market()
-    previous = load_alert_state()
-
-    if should_send_alert(previous, outcome):
-        send_telegram_message(build_decision_message(outcome, previous))
-
-    save_alert_state(outcome)
-    return outcome
-
+        
+        # Initialize portfolio manager
+        self.portfolio_manager = PortfolioManager(
+            self.asset_manager,
+            self.config.portfolio,
+            self.config.trading
+        )
+        
+        # Initialize profit calculator
+        self.profit_calculator = ProfitCalculator(self.config.portfolio)
+        
+        # Initialize risk manager
+        self.risk_manager = RiskManager(
+            self.asset_manager,
+            self.config.portfolio,
+            self.config.trading
+        )
+        
+        # Initialize trade storage
+        self.trade_storage = TradeStorage(self.config.system)
+        
+        # Initialize performance tracker
+        self.performance_tracker = PerformanceTracker(
+            self.asset_manager,
+            self.config.portfolio
+        )
+        
+        # Initialize signal engine
+        self.signal_engine = SignalEngine(
+            self.asset_manager,
+            self.config.trading
+        )
+        
+        # Initialize Telegram formatter
+        self.telegram_formatter = TelegramFormatter(
+            self.asset_manager,
+            self.portfolio_manager,
+            self.config.system
+        )
+        
+        # Load existing data from storage
+        self._load_existing_data()
+    
+    def _load_existing_data(self) -> None:
+        """Load existing data from storage"""
+        try:
+            # Load trades
+            trades = self.trade_storage.get_trades()
+            for trade in trades:
+                self.asset_manager.add_open_position(trade.asset, trade)
+            
+            # Load portfolio stats
+            stats = self.trade_storage.get_portfolio_stats()
+            for stat in stats:
+                self.portfolio_manager.update_portfolio()
+            
+            # Load signals
+            signals = self.trade_storage.get_signals()
+            for signal in signals:
+                # Process signal data
+                pass
+            
+            logger.info("Existing data loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading existing data: {e}")
+    
+    def run_scan(self) -> None:
+        """Run a complete scan cycle"""
+        logger.info("Starting scan cycle")
+        
+        try:
+            # Update portfolio metrics
+            portfolio_metrics = self.portfolio_manager.update_portfolio()
+            
+            # Generate signals for each asset
+            signal_results: Dict[str, SignalResult] = {}
+            
+            for symbol, analyzer in self.market_analyzers.items():
+                # Get current price (placeholder - would need real price data)
+                current_price = 100000.0  # Placeholder
+                previous_price = 99000.0  # Placeholder
+                
+                # Analyze market
+                market_analysis = analyzer.analyze_market(
+                    symbol, current_price, previous_price
+                )
+                
+                # Generate signal
+                signal_result = self.signal_engine.generate_signal(
+                    symbol, market_analysis
+                )
+                
+                signal_results[symbol] = signal_result
+                
+                # Save signal to storage
+                self._save_signal(signal_result)
+            
+            # Send Telegram reports
+            self._send_reports(signal_results)
+            
+            # Update performance tracker
+            self.performance_tracker.track_performance()
+            
+            # Check risk limits
+            risk_alerts = self.risk_manager.check_risk_limits()
+            if risk_alerts:
+                self._handle_risk_alerts(risk_alerts)
+            
+            # Save portfolio stats
+            self._save_portfolio_stats()
+            
+            # Backup data
+            self.trade_storage.backup_data()
+            
+            logger.info("Scan cycle completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Error during scan cycle: {e}")
+    
+    def _save_signal(self, signal_result: SignalResult) -> None:
+        """Save signal to storage"""
+        try:
+            signal_data = {
+                'symbol': signal_result.symbol,
+                'timestamp': signal_result.timestamp.isoformat(),
+                'decision': signal_result.decision,
+                'confidence': signal_result.confidence,
+                'action_taken': signal_result.action_taken,
+                'positions_opened': signal_result.positions_opened,
+                'positions_closed': signal_result.positions_closed
+            }
+            
+            self.trade_storage.save_signal(signal_data)
+            
+        except Exception as e:
+            logger.error(f"Error saving signal: {e}")
+    
+    def _send_reports(self, signal_results: Dict[str, SignalResult]) -> None:
+        """Send Telegram reports"""
+        try:
+            # Send signal report
+            if signal_results:
+                # Use the first signal result as reference
+                first_symbol = list(signal_results.keys())[0]
+                signal_result = signal_results[first_symbol]
+                
+                report = self.telegram_formatter.format_signal_report(
+                    signal_result, ReportFormat.PROFESSIONAL
+                )
+                
+                # Send to Telegram (placeholder)
+                self._send_telegram_message(report)
+            
+            # Send portfolio report
+            portfolio_report = self.telegram_formatter.format_portfolio_report(
+                ReportFormat.PROFESSIONAL
+            )
+            
+            # Send to Telegram (placeholder)
+            self._send_telegram_message(portfolio_report)
+            
+        except Exception as e:
+            logger.error(f"Error sending reports: {e}")
+    
+    def _handle_risk_alerts(self, alerts: List[Any]) -> None:
+        """Handle risk alerts"""
+        for alert in alerts:
+            logger.warning(f"Risk alert: {alert}")
+            
+            # Send alert to Telegram (placeholder)
+            alert_message = f"⚠️ RISK ALERT: {alert}"
+            self._send_telegram_message(alert_message)
+    
+    def _save_portfolio_stats(self) -> None:
+        """Save portfolio statistics"""
+        try:
+            portfolio_metrics = self.portfolio_manager.update_portfolio()
+            
+            stats_data = {
+                'total_balance': portfolio_metrics.total_balance,
+                'total_equity': portfolio_metrics.total_equity,
+                'total_floating_pnl': portfolio_metrics.total_floating_pnl,
+                'total_realized_pnl': portfolio_metrics.total_realized_pnl,
+                'net_pnl': portfolio_metrics.net_pnl,
+                'win_rate': portfolio_metrics.win_rate,
+                'profit_factor': portfolio_metrics.profit_factor,
+                'total_trades': portfolio_metrics.total_trades,
+                'winning_trades': portfolio_metrics.winning_trades,
+                'losing_trades': portfolio_metrics.losing_trades,
+                'max_drawdown': portfolio_metrics.max_drawdown,
+                'recovery_factor': portfolio_metrics.recovery_factor
+            }
+            
+            self.trade_storage.save_portfolio_stats(stats_data)
+            
+        except Exception as e:
+            logger.error(f"Error saving portfolio stats: {e}")
+    
+    def _send_telegram_message(self, message: str) -> bool:
+        """Send message to Telegram (placeholder)"""
+        # This would use the existing send_telegram_message function
+        # For now, just log the message
+        logger.info(f"Telegram message: {message}")
+        return True
+    
+    def run_continuous(self, interval_minutes: int = 15) -> None:
+        """Run the bot continuously"""
+        logger.info(f"Starting continuous operation with {interval_minutes} minute intervals")
+        
+        while True:
+            try:
+                start_time = time.time()
+                
+                # Run scan cycle
+                self.run_scan()
+                
+                # Calculate sleep time
+                elapsed = time.time() - start_time
+                sleep_time = (interval_minutes * 60) - elapsed
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"Error in continuous operation: {e}")
+                time.sleep(60)  # Wait 1 minute before retrying
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current bot status"""
+        status = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'assets': {},
+            'portfolio': {},
+            'risk': {},
+            'performance': {}
+        }
+        
+        # Get asset status
+        for symbol, asset_state in self.asset_manager.get_all_assets().items():
+            status['assets'][symbol] = {
+                'balance': asset_state.balance,
+                'equity': asset_state.equity,
+                'open_positions': len(asset_state.open_positions),
+                'closed_trades': len(asset_state.closed_trades)
+            }
+        
+        # Get portfolio status
+        portfolio_metrics = self.portfolio_manager.update_portfolio()
+        status['portfolio'] = {
+            'total_balance': portfolio_metrics.total_balance,
+            'total_equity': portfolio_metrics.total_equity,
+            'net_pnl': portfolio_metrics.net_pnl,
+            'win_rate': portfolio_metrics.win_rate,
+            'profit_factor': portfolio_metrics.profit_factor
+        }
+        
+        # Get risk status
+        risk_metrics = self.risk_manager.calculate_risk_metrics()
+        status['risk'] = {
+            'risk_score': risk_metrics.get('portfolio_risk_score', 0),
+            'exposure_ratio': risk_metrics.get('exposure_ratio', 0),
+            'max_drawdown': risk_metrics.get('max_drawdown', 0)
+        }
+        
+        # Get performance status
+        performance_data = self.performance_tracker.track_performance()
+        status['performance'] = performance_data
+        
+        return status
 
 def main() -> None:
-    print(run_decision_engine().decision)
-
+    """Main entry point"""
+    try:
+        # Create and run the bot
+        bot = AITradingIntelligenceBot()
+        
+        # Run in continuous mode
+        bot.run_continuous(interval_minutes=15)
+        
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
