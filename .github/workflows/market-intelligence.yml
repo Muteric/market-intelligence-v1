@@ -7,7 +7,7 @@ on:
     paths-ignore:
       - .market_alert_state.json
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 jobs:

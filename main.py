@@ -353,12 +353,12 @@ def main() -> None:
         # Create and run the bot
         bot = AITradingIntelligenceBot()
         
-        # Run in continuous mode
-        bot.run_continuous(interval_minutes=15)
+        # Run a single scan cycle (GitHub Actions handles scheduling)
+        bot.run_scan()
         
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         raise
 
 if __name__ == "__main__":
-    main()
+main()
