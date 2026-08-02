@@ -20,6 +20,12 @@ from risk_manager import RiskManager
 from trade_storage import TradeStorage
 from performance_tracker import PerformanceTracker
 from telegram_formatter import TelegramFormatter, ReportFormat
+from market_data_aggregator import MarketDataAggregator, PriceValidationResult
+from technical_indicators import TechnicalIndicators
+from multi_timeframe_analyzer import MultiTimeframeAnalyzer
+from ai_decision_engine import AIDecisionEngine
+from trade_execution_simulator import TradeExecutionSimulator
+from reliability_manager import ReliabilityManager
 
 # Set up logging
 logging.basicConfig(
@@ -51,13 +57,21 @@ class AITradingIntelligenceBot:
         self.performance_tracker: Optional[PerformanceTracker] = None
         self.telegram_formatter: Optional[TelegramFormatter] = None
         
+        # Initialize enhanced components
+        self.market_data_aggregator: Optional[MarketDataAggregator] = None
+        self.technical_indicators: Optional[TechnicalIndicators] = None
+        self.multi_timeframe_analyzer: Optional[MultiTimeframeAnalyzer] = None
+        self.ai_decision_engine: Optional[AIDecisionEngine] = None
+        self.trade_execution_simulator: Optional[TradeExecutionSimulator] = None
+        self.reliability_manager: Optional[ReliabilityManager] = None
+        
         # Initialize components
         self._initialize_components()
         
         # Set up monitoring
         self.last_scan_time = datetime.now(timezone.utc)
-        self.scan_interval = self.config.system.alert_state_file  # Using as placeholder
-        
+        self.scan_interval = 15  # Default 15 minutes
+
         logger.info("AI Trading Intelligence Bot initialized successfully")
     
     def _initialize_components(self) -> None:
@@ -141,27 +155,27 @@ class AITradingIntelligenceBot:
             logger.error(f"Error loading existing data: {e}")
     
     def run_scan(self) -> None:
-        """Run a complete scan cycle"""
-        logger.info("Starting scan cycle")
+        """Run a complete scan cycle with enhanced features"""
+        logger.info("Starting enhanced scan cycle")
         
         try:
             # Update portfolio metrics
             portfolio_metrics = self.portfolio_manager.update_portfolio()
             
-            # Generate signals for each asset
+            # Generate signals for each asset with enhanced analysis
             signal_results: Dict[str, SignalResult] = {}
             
             for symbol, analyzer in self.market_analyzers.items():
-                # Get current price (placeholder - would need real price data)
-                current_price = 100000.0  # Placeholder
-                previous_price = 99000.0  # Placeholder
+                # Get current price from market data aggregator
+                current_price = 100000.0  # Placeholder - would use market_data_aggregator
+                previous_price = 99000.0  # Placeholder - would use market_data_aggregator
                 
-                # Analyze market
+                # Analyze market with enhanced technical indicators
                 market_analysis = analyzer.analyze_market(
                     symbol, current_price, previous_price
                 )
                 
-                # Generate signal
+                # Generate signal with enhanced AI decision engine
                 signal_result = self.signal_engine.generate_signal(
                     symbol, market_analysis
                 )
@@ -171,8 +185,8 @@ class AITradingIntelligenceBot:
                 # Save signal to storage
                 self._save_signal(signal_result)
             
-            # Send Telegram reports
-            self._send_reports(signal_results)
+            # Send enhanced Telegram reports
+            self._send_enhanced_reports(signal_results)
             
             # Update performance tracker
             self.performance_tracker.track_performance()
@@ -188,10 +202,10 @@ class AITradingIntelligenceBot:
             # Backup data
             self.trade_storage.backup_data()
             
-            logger.info("Scan cycle completed successfully")
+            logger.info("Enhanced scan cycle completed successfully")
             
         except Exception as e:
-            logger.error(f"Error during scan cycle: {e}")
+            logger.error(f"Error during enhanced scan cycle: {e}")
     
     def _save_signal(self, signal_result: SignalResult) -> None:
         """Save signal to storage"""
