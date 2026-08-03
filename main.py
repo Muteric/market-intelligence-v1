@@ -68,6 +68,9 @@ class AITradingIntelligenceBot:
         # Initialize components
         self._initialize_components()
         
+        # Initialize enhanced components
+        self._initialize_enhanced_components()
+        
         # Set up monitoring
         self.last_scan_time = datetime.now(timezone.utc)
         self.scan_interval = 15  # Default 15 minutes
@@ -131,6 +134,33 @@ class AITradingIntelligenceBot:
         # Load existing data from storage
         self._load_existing_data()
     
+    def _initialize_enhanced_components(self) -> None:
+        """Initialize enhanced components for live market data verification"""
+        # Initialize market data aggregator for live price verification
+        self.market_data_aggregator = MarketDataAggregator()
+        
+        # Initialize technical indicators for enhanced analysis
+        self.technical_indicators = TechnicalIndicators()
+        
+        # Initialize multi-timeframe analyzer for comprehensive analysis
+        self.multi_timeframe_analyzer = MultiTimeframeAnalyzer()
+        
+        # Initialize AI decision engine for enhanced signal generation
+        self.ai_decision_engine = AIDecisionEngine(
+            self.asset_manager,
+            self.config.trading
+        )
+        
+        # Initialize trade execution simulator for testing
+        self.trade_execution_simulator = TradeExecutionSimulator(
+            self.asset_manager,
+            self.config.portfolio,
+            self.config.trading
+        )
+        
+        # Initialize reliability manager for system monitoring
+        self.reliability_manager = ReliabilityManager()
+    
     def _load_existing_data(self) -> None:
         """Load existing data from storage"""
         try:
@@ -166,9 +196,8 @@ class AITradingIntelligenceBot:
             signal_results: Dict[str, SignalResult] = {}
             
             for symbol, analyzer in self.market_analyzers.items():
-                # Get current price from market data aggregator
-                current_price = 100000.0  # Placeholder - would use market_data_aggregator
-                previous_price = 99000.0  # Placeholder - would use market_data_aggregator
+                # Get current price from market data aggregator with live verification
+                current_price, previous_price = self._get_live_market_data(symbol)
                 
                 # Analyze market with enhanced technical indicators
                 market_analysis = analyzer.analyze_market(
@@ -179,6 +208,21 @@ class AITradingIntelligenceBot:
                 signal_result = self.signal_engine.generate_signal(
                     symbol, market_analysis
                 )
+                
+                # Apply AI decision engine for enhanced analysis
+                if self.ai_decision_engine:
+                    technical_indicators = self.technical_indicators.calculate_all_indicators(symbol)
+                    multi_timeframe = self.multi_timeframe_analyzer.analyze_multi_timeframe(symbol)
+                    
+                    ai_decision = self.ai_decision_engine.generate_decision(
+                        symbol, market_analysis, technical_indicators, multi_timeframe,
+                        current_price, previous_price
+                    )
+                    
+                    # Update signal with AI decision insights
+                    signal_result.decision = ai_decision.decision
+                    signal_result.confidence = ai_decision.confidence_score
+                    signal_result.reasoning = ai_decision.ai_explanation.split('; ') if ai_decision.ai_explanation else market_analysis.reasoning
                 
                 signal_results[symbol] = signal_result
                 
@@ -206,6 +250,8 @@ class AITradingIntelligenceBot:
             
         except Exception as e:
             logger.error(f"Error during enhanced scan cycle: {e}")
+            # Send alert to Telegram
+            self._send_telegram_message(f"⚠️ SCAN ERROR: {e}")
     
     def _save_signal(self, signal_result: SignalResult) -> None:
         """Save signal to storage"""
@@ -251,6 +297,42 @@ class AITradingIntelligenceBot:
             
         except Exception as e:
             logger.error(f"Error sending reports: {e}")
+    
+    def _send_enhanced_reports(self, signal_results: Dict[str, SignalResult]) -> None:
+        """Send enhanced Telegram reports with comprehensive intelligence"""
+        try:
+            # Send enhanced signal report
+            if signal_results:
+                # Use the first signal result as reference
+                first_symbol = list(signal_results.keys())[0]
+                signal_result = signal_results[first_symbol]
+                
+                # Generate enhanced report with all required sections
+                enhanced_report = self._generate_enhanced_report(signal_result)
+                
+                # Send to Telegram (placeholder)
+                self._send_telegram_message(enhanced_report)
+            
+            # Send enhanced portfolio report
+            portfolio_report = self._generate_enhanced_portfolio_report()
+            
+            # Send to Telegram (placeholder)
+            self._send_telegram_message(portfolio_report)
+            
+        except Exception as e:
+            logger.error(f"Error sending enhanced reports: {e}")
+    
+    def _generate_enhanced_report(self, signal_result: SignalResult) -> str:
+        """Generate enhanced intelligence report for a symbol"""
+        # This would use the enhanced Telegram formatter
+        # For now, return a placeholder
+        return f"Enhanced Report for {signal_result.symbol}\nDecision: {signal_result.decision}\nConfidence: {signal_result.confidence}"
+    
+    def _generate_enhanced_portfolio_report(self) -> str:
+        """Generate enhanced portfolio intelligence report"""
+        # This would use the enhanced Telegram formatter
+        # For now, return a placeholder
+        return "Enhanced Portfolio Report\nAccount Balance: $100.00\nTotal PnL: $0.00"
     
     def _handle_risk_alerts(self, alerts: List[Any]) -> None:
         """Handle risk alerts"""
@@ -375,4 +457,4 @@ def main() -> None:
         raise
 
 if __name__ == "__main__":
-main()
+    main()
