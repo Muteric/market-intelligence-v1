@@ -12,7 +12,12 @@ import math
 
 from configuration_manager import TradingConfig, AssetConfig
 from market_analyzer import MarketAnalysis
+from risk_calculator import RiskCalculator, RiskMetrics
 from technical_indicators import TechnicalIndicatorsResult
+from market_regime_detector import (
+    MarketRegimeDetector,
+    MarketRegime,
+)
 from multi_timeframe_analyzer import MultiTimeframeResult
 from asset_manager import AssetManager, Trade, PositionDirection, TradeStatus
 
