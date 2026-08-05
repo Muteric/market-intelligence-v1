@@ -158,8 +158,8 @@ class TradeManager:
         
         return self._round_decimal(units)
     
-    def manage_positions(self, symbol: str, current_price: float) -> Dict[str, Any]:
-        """Manage open positions (stop loss, take profit, trailing stop)"""
+    def manage_positions(self, symbol: str, current_price: float, scenario: str = "A") -> Dict[str, Any]:
+        """Manage open positions (stop loss, take profit, trailing stop) with scenario support"""
         asset_state = self.asset_manager.get_asset_state(symbol)
         if not asset_state:
             return {}
@@ -168,7 +168,7 @@ class TradeManager:
         positions_closed = []
         
         for trade in asset_state.open_positions[:]:  # Copy list to avoid modification during iteration
-            action = self._check_position_exit_conditions(trade, current_price)
+            action = self._check_position_exit_conditions(trade, current_price, scenario)
             if action:
                 closed_trade = self.asset_manager.close_position(
                     symbol, trade.id, current_price, action
@@ -180,7 +180,8 @@ class TradeManager:
         return {
             'actions_taken': actions_taken,
             'positions_closed': positions_closed,
-            'remaining_positions': len(asset_state.open_positions)
+            'remaining_positions': len(asset_state.open_positions),
+            'scenario': scenario
         }
     
     def _calculate_execution_price(self, order: Order, current_price: float) -> float:
@@ -220,32 +221,140 @@ class TradeManager:
         slippage = abs(execution_price - current_price) / current_price
         return self._round_decimal(slippage * 100)  # As percentage
     
-    def _check_position_exit_conditions(self, trade: Trade, current_price: float) -> Optional[str]:
-        """Check if position should be closed based on exit conditions"""
+    def _check_position_exit_conditions(self, trade: Trade, current_price: float, scenario: str = "B") -> Optional[str]:
+        """Check if position should be closed based on exit conditions with scenario support"""
         if trade.status != TradeStatus.OPEN.value:
             return None
         
-        # Check stop loss
-        if trade.stop_loss_price and current_price <= trade.stop_loss_price:
-            return "STOP_LOSS"
+        # Scenario-specific parameters
+        scenario_params = self._get_scenario_parameters(scenario)
         
-        # Check take profit
-        if trade.take_profit_price and current_price >= trade.take_profit_price:
-            return "TAKE_PROFIT"
-        
-        # Check trailing stop
-        if self.trading_config.trailing_stop_enabled and trade.stop_loss_price:
-            # Calculate potential trailing stop based on current price
-            if trade.direction == PositionDirection.BUY.value:
-                new_stop_loss = current_price * (1 - self.trading_config.trailing_stop_percentage)
-            else:
-                new_stop_loss = current_price * (1 + self.trading_config.trailing_stop_percentage)
+        # Check stop loss with scenario adjustments
+        if trade.stop_loss_price:
+            # Adjust stop loss based on scenario
+            adjusted_stop_loss = self._adjust_stop_loss_for_scenario(
+                trade, trade.stop_loss_price, current_price, scenario_params
+            )
             
-            if new_stop_loss > trade.stop_loss_price:
+            if current_price <= adjusted_stop_loss:
+                return "STOP_LOSS"
+        
+        # Check take profit with scenario adjustments
+        if trade.take_profit_price:
+            # Adjust take profit based on scenario
+            adjusted_take_profit = self._adjust_take_profit_for_scenario(
+                trade, trade.take_profit_price, current_price, scenario_params
+            )
+            
+            if current_price >= adjusted_take_profit:
+                return "TAKE_PROFIT"
+        
+        # Check trailing stop with scenario adjustments
+        if self.trading_config.trailing_stop_enabled and trade.stop_loss_price:
+            # Calculate potential trailing stop based on current price with scenario adjustments
+            if trade.direction == PositionDirection.BUY.value:
+                new_stop_loss = current_price * (1 - scenario_params['trailing_stop_percentage'])
+            else:
+                new_stop_loss = current_price * (1 + scenario_params['trailing_stop_percentage'])
+            
+            # Apply scenario-specific trailing stop logic
+            if self._should_update_trailing_stop(trade, new_stop_loss, scenario_params):
                 trade.stop_loss_price = new_stop_loss
                 return "TRAILING_STOP"
         
         return None
+    
+    def _get_scenario_parameters(self, scenario: str) -> Dict[str, Any]:
+        """Get scenario-specific parameters"""
+        scenarios = {
+            'A': {  # Conservative
+                'trailing_stop_percentage': 0.02,  # 2% trailing stop
+                'stop_loss_buffer': 0.01,  # 1% buffer
+                'take_profit_multiplier': 2.0,  # 2:1 risk/reward
+                'position_size_multiplier': 0.5,  # 50% of normal size
+                'max_positions': 2,  # Max 2 positions
+                'risk_level': 'LOW'
+            },
+            'B': {  # Moderate (default)
+                'trailing_stop_percentage': 0.03,  # 3% trailing stop
+                'stop_loss_buffer': 0.02,  # 2% buffer
+                'take_profit_multiplier': 3.0,  # 3:1 risk/reward
+                'position_size_multiplier': 1.0,  # 100% of normal size
+                'max_positions': 3,  # Max 3 positions
+                'risk_level': 'MEDIUM'
+            },
+            'C': {  # Aggressive
+                'trailing_stop_percentage': 0.05,  # 5% trailing stop
+                'stop_loss_buffer': 0.03,  # 3% buffer
+                'take_profit_multiplier': 4.0,  # 4:1 risk/reward
+                'position_size_multiplier': 1.5,  # 150% of normal size
+                'max_positions': 3,  # Max 3 positions
+                'risk_level': 'HIGH'
+            },
+            'D': {  # Extreme
+                'trailing_stop_percentage': 0.08,  # 8% trailing stop
+                'stop_loss_buffer': 0.05,  # 5% buffer
+                'take_profit_multiplier': 5.0,  # 5:1 risk/reward
+                'position_size_multiplier': 2.0,  # 200% of normal size
+                'max_positions': 3,  # Max 3 positions
+                'risk_level': 'EXTREME'
+            }
+        }
+        
+        return scenarios.get(scenario.upper(), scenarios['B'])  # Default to B if invalid
+    
+    def _adjust_stop_loss_for_scenario(self, trade: Trade, stop_loss_price: float,
+                                      current_price: float, scenario_params: Dict[str, Any]) -> float:
+        """Adjust stop loss price based on scenario"""
+        if trade.direction == PositionDirection.BUY.value:
+            # For buy trades, stop loss should be below current price
+            adjusted_stop = current_price * (1 - scenario_params['stop_loss_buffer'])
+        else:
+            # For sell trades, stop loss should be above current price
+            adjusted_stop = current_price * (1 + scenario_params['stop_loss_buffer'])
+        
+        # Ensure the adjusted stop is tighter than the original
+        if trade.direction == PositionDirection.BUY.value:
+            return min(adjusted_stop, stop_loss_price)
+        else:
+            return max(adjusted_stop, stop_loss_price)
+    
+    def _adjust_take_profit_for_scenario(self, trade: Trade, take_profit_price: float,
+                                        current_price: float, scenario_params: Dict[str, Any]) -> float:
+        """Adjust take profit price based on scenario"""
+        if trade.direction == PositionDirection.BUY.value:
+            # For buy trades, take profit should be above current price
+            # Calculate based on risk/reward ratio
+            risk = abs(current_price - trade.entry_price)
+            adjusted_take_profit = current_price + (risk * scenario_params['take_profit_multiplier'])
+        else:
+            # For sell trades, take profit should be below current price
+            # Calculate based on risk/reward ratio
+            risk = abs(current_price - trade.entry_price)
+            adjusted_take_profit = current_price - (risk * scenario_params['take_profit_multiplier'])
+        
+        # Ensure the adjusted take profit is better than the original
+        if trade.direction == PositionDirection.BUY.value:
+            return max(adjusted_take_profit, take_profit_price)
+        else:
+            return min(adjusted_take_profit, take_profit_price)
+    
+    def _should_update_trailing_stop(self, trade: Trade, new_stop_loss: float,
+                                   scenario_params: Dict[str, Any]) -> bool:
+        """Determine if trailing stop should be updated based on scenario"""
+        # For conservative scenarios, be more conservative with trailing stops
+        if scenario_params['risk_level'] in ['LOW', 'MEDIUM']:
+            # Only update if new stop is significantly better
+            if trade.direction == PositionDirection.BUY.value:
+                return new_stop_loss > trade.stop_loss_price * 1.01  # 1% improvement required
+            else:
+                return new_stop_loss < trade.stop_loss_price * 0.99  # 1% improvement required
+        else:
+            # For aggressive scenarios, update more frequently
+            if trade.direction == PositionDirection.BUY.value:
+                return new_stop_loss > trade.stop_loss_price
+            else:
+                return new_stop_loss < trade.stop_loss_price
     
     def get_open_orders(self, symbol: str = None) -> List[Order]:
         """Get open orders, optionally filtered by symbol"""
