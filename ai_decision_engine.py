@@ -12,7 +12,14 @@ import math
 
 from configuration_manager import TradingConfig, AssetConfig
 from market_analyzer import MarketAnalysis
+from portfolio_analyzer import PortfolioAnalyzer, PortfolioState
 from risk_calculator import RiskCalculator, RiskMetrics
+from performance_tracker import (
+    PerformanceTracker,
+    PerformanceMetricType,
+    PerformancePeriod,
+    PerformanceBenchmark,
+)
 from technical_indicators import TechnicalIndicatorsResult
 from market_regime_detector import (
     MarketRegimeDetector,
