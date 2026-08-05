@@ -1,4 +1,9 @@
 {
+<<<<<<< HEAD
   "decision": null,
   "confidence_score": null
+=======
+  "decision": "HOLD",
+  "confidence_score": 0.6964
+>>>>>>> c4dfd855d4ad2434eaf90bd1b8e14caa86736d9b
 }
