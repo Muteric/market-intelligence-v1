@@ -12,7 +12,7 @@ import math
 
 from configuration_manager import TradingConfig, AssetConfig
 from market_analyzer import MarketAnalysis
-from portfolio_analyzer import PortfolioAnalyzer, PortfolioState
+from portfolio_manager import PortfolioManager
 from risk_calculator import RiskCalculator, RiskMetrics
 from performance_tracker import (
     PerformanceTracker,
@@ -102,7 +102,11 @@ class AIDecisionEngine:
         self.trading_config = trading_config
         self.market_regime_detector = MarketRegimeDetector()
         self.risk_calculator = RiskCalculator()
-        self.portfolio_analyzer = PortfolioAnalyzer(asset_manager)
+        self.portfolio_manager = PortfolioManager(
+    asset_manager,
+    trading_config.portfolio_config,
+    trading_config
+)
         self.performance_tracker = PerformanceTracker()
     
     def generate_decision(self, symbol: str, market_analysis: MarketAnalysis, 
@@ -113,7 +117,7 @@ class AIDecisionEngine:
         logger.info(f"Generating AI decision for {symbol}")
         
         # Calculate portfolio state
-        portfolio_state = self.portfolio_analyzer.analyze_portfolio(symbol)
+        metrics = self.portfolio_manager.update_portfolio()
         
         # Detect market regime
         market_regime = self.market_regime_detector.detect_regime(symbol, market_analysis, technical_indicators)
@@ -133,35 +137,35 @@ class AIDecisionEngine:
         # Generate AI decision
         decision = self._make_ai_decision(
             symbol, market_analysis, technical_indicators, multi_timeframe,
-            portfolio_state, market_regime, risk_metrics
+           metrics , market_regime, risk_metrics
         )
         
         # Calculate confidence scores
         confidence_score = self._calculate_confidence_score(
             symbol, market_analysis, technical_indicators, multi_timeframe,
-            portfolio_state, market_regime, risk_metrics, decision
+            metrics, market_regime, risk_metrics, decision
         )
         
         confidence_explanation = self._generate_confidence_explanation(
             symbol, market_analysis, technical_indicators, multi_timeframe,
-            portfolio_state, market_regime, risk_metrics, decision, confidence_score
+            metrics, market_regime, risk_metrics, decision, confidence_score
         )
         
         # Calculate trade quality score
         trade_quality_score = self._calculate_trade_quality_score(
-            symbol, decision, market_analysis, technical_indicators, portfolio_state
+            symbol, decision, market_analysis, technical_indicators,metrics 
         )
         
         # Generate market narrative
         market_narrative = self._generate_market_narrative(
             symbol, market_analysis, technical_indicators, multi_timeframe,
-            portfolio_state, market_regime
+            metrics, market_regime
         )
         
         # Generate AI explanation
         ai_explanation = self._generate_ai_explanation(
             symbol, market_analysis, technical_indicators, multi_timeframe,
-            portfolio_state, market_regime, risk_metrics, decision
+           metrics, market_regime, risk_metrics, decision
         )
         
         # Get open trades
@@ -191,7 +195,7 @@ class AIDecisionEngine:
             volatility=market_analysis.volatility_score,
             market_regime=market_regime,
             risk_metrics=risk_metrics,
-            portfolio_state=portfolio_state,
+            portfolio_state=metrics,
             technical_indicators=technical_indicators,
             multi_timeframe=multi_timeframe,
             open_trades=open_trades,
