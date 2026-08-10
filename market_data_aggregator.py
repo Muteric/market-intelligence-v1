@@ -18,6 +18,7 @@ except ImportError:  # Optional at import time; requirements installs it in CI.
 import random
 import os
 import math
+from statistics import median
 from urllib.parse import quote
 
 from configuration_manager import AssetConfig
@@ -57,17 +58,22 @@ class PriceValidationResult:
     previous_price: Optional[float] = None
     ohlcv: Optional[List[Dict[str, float]]] = None
     ohlcv_provider: Optional[str] = None
+    provider_count: int = 0
+    valid_provider_count: int = 0
+    provider_status: Optional[Dict[str, str]] = None
 
 class MarketDataAggregator:
     """Multi-source market data aggregation with price validation"""
     
-    def __init__(self, config_file: str = "app_config.json"):
+    def __init__(self, config_file: str = "app_config.json", system_config: Any = None):
         self.config_file = config_file
+        self.system_config = system_config
         self.providers = {}
         self.provider_configs = {}
         self.price_history = {}
         self.validation_cache = {}
         self.last_successful_fetch = {}
+        self.provider_cache = {}
         self.provider_health = {}
         self._initialize_providers()
         
@@ -135,6 +141,22 @@ class MarketDataAggregator:
             'priority': 5,
             'weight': 0.6
         }
+
+        self.providers['goldapi'] = {
+            'name': 'GoldAPI', 'base_url': os.getenv('GOLDAPI_BASE_URL', 'https://www.goldapi.io/api'),
+            'required_key': 'GOLDAPI_KEY', 'weight': 1.0,
+        }
+        self.providers['goldprice_dev'] = {
+            'name': 'GoldPriceDev', 'base_url': os.getenv('GOLDPRICEDEV_BASE_URL', 'https://api.goldprice.dev'),
+            'required_key': None, 'weight': 0.9,
+        }
+        self.providers['mt5'] = {
+            'name': 'MT5', 'required_key': None, 'weight': 1.1,
+        }
+        self.providers['itick'] = {
+            'name': 'iTick', 'base_url': os.getenv('ITICK_BASE_URL', 'https://api.itick.org'),
+            'required_key': 'ITICK_API_KEY', 'weight': 0.8,
+        }
         
         # Initialize provider health tracking
         for provider_name in self.providers:
@@ -145,6 +167,8 @@ class MarketDataAggregator:
                 'successful_requests': 0,
                 'average_response_time': 0.0,
                 'is_healthy': True
+                , 'last_failure': None, 'request_count': 0, 'error_count': 0,
+                'last_price': None, 'last_timestamp': None, 'stale': False,
             }
     
     async def fetch_market_data(self, symbol: str) -> PriceValidationResult:
@@ -153,11 +177,12 @@ class MarketDataAggregator:
 
         # Fetch data from all providers
         provider_data = {}
-        for provider_name in self.providers:
+        for provider_name in self._provider_names_for_symbol(symbol):
             try:
                 data = await self._fetch_from_provider(provider_name, symbol)
                 if data:
                     provider_data[provider_name] = data
+                    self.provider_cache[(symbol, provider_name)] = data
                     self._update_provider_health(provider_name, True)
                 else:
                     self._update_provider_health(provider_name, False)
@@ -166,7 +191,7 @@ class MarketDataAggregator:
                 self._update_provider_health(provider_name, False)
         
         if not provider_data:
-            raise Exception(f"No market data available for {symbol} from any provider")
+            raise ValueError(f"DATA UNAVAILABLE: no market data available for {symbol} from configured providers")
         
         # Validate and calculate consensus
         validation_result = self._validate_and_consensus(symbol, provider_data)
@@ -178,7 +203,7 @@ class MarketDataAggregator:
     
     async def _fetch_from_provider(self, provider_name: str, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from a specific provider"""
-        if requests is None:
+        if requests is None and provider_name != 'mt5':
             logger.warning("Provider %s unavailable: requests dependency is not installed", provider_name)
             return None
         provider = self.providers[provider_name]
@@ -186,6 +211,13 @@ class MarketDataAggregator:
         if required_key and not os.getenv(required_key):
             logger.info("Provider %s unavailable: missing %s", provider_name, required_key)
             return None
+        cached = self.provider_cache.get((symbol, provider_name))
+        if cached is not None and provider_name == 'goldapi':
+            age = (datetime.now(timezone.utc) - cached.timestamp).total_seconds()
+            interval = getattr(self.system_config, 'goldapi_min_interval_seconds', 300)
+            if age < interval:
+                logger.info('Using cached GoldAPI result for %s (age %.0fs)', symbol, age)
+                return cached
         start_time = time.time()
         
         try:
@@ -199,6 +231,14 @@ class MarketDataAggregator:
                 data = await self._fetch_twelvedata(provider, symbol)
             elif provider_name == 'yahoo_finance':
                 data = await self._fetch_yahoo_finance(provider, symbol)
+            elif provider_name == 'goldapi':
+                data = await self._fetch_goldapi(provider, symbol)
+            elif provider_name == 'goldprice_dev':
+                data = await self._fetch_goldprice_dev(provider, symbol)
+            elif provider_name == 'mt5':
+                data = await self._fetch_mt5(provider, symbol)
+            elif provider_name == 'itick':
+                data = await self._fetch_itick(provider, symbol)
             else:
                 return None
             
@@ -211,6 +251,126 @@ class MarketDataAggregator:
             logger.error(f"Error fetching from {provider_name}: {e}")
             return None
     
+    def _normalized_quote(self, symbol: str, price: Any, provider: str, source: str,
+                          timestamp: Any = None, bid: Any = None, ask: Any = None,
+                          previous_price: Any = None, volume: Any = 0.0,
+                          ohlcv: Optional[List[Dict[str, float]]] = None) -> MarketDataPoint:
+        value = float(price)
+        stamp = timestamp or datetime.now(timezone.utc)
+        if isinstance(stamp, (int, float)):
+            stamp = datetime.fromtimestamp(float(stamp) / (1000 if stamp > 10**11 else 1), timezone.utc)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        bid_value = float(bid) if bid is not None else value
+        ask_value = float(ask) if ask is not None else value
+        return MarketDataPoint(
+            symbol=symbol, price=value, bid=bid_value, ask=ask_value,
+            spread=ask_value - bid_value, volume=float(volume or 0.0),
+            timestamp=stamp, provider=provider, source=source,
+            previous_price=float(previous_price) if previous_price is not None else None,
+            ohlcv=ohlcv,
+        )
+
+    async def _fetch_goldapi(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
+        if symbol != 'XAUUSD':
+            return None
+        response = requests.get(
+            f"{provider['base_url']}/XAU/USD",
+            headers={'x-access-token': os.getenv('GOLDAPI_KEY', '')}, timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return self._normalized_quote(
+            symbol, data.get('price'), provider['name'], 'goldapi',
+            timestamp=data.get('timestamp'), bid=data.get('bid'), ask=data.get('ask'),
+            previous_price=data.get('prev_close_price'), volume=data.get('volume', 0.0),
+        )
+
+    async def _fetch_goldprice_dev(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
+        if symbol != 'XAUUSD':
+            return None
+        headers = {}
+        key = os.getenv('GOLDPRICEDEV_API_KEY') or os.getenv('GP_KEY')
+        if key:
+            headers['Authorization'] = f'Bearer {key}'
+        response = requests.get(
+            f"{provider['base_url']}/v1/spot/XAU-USD", headers=headers, timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict) and 'price' in data:
+            quote = data
+        else:
+            quote = (data.get('symbols') or [{}])[0]
+        ohlcv = None
+        try:
+            bars_response = requests.get(
+                f"{provider['base_url']}/v1/bars",
+                params={'symbol': 'XAU-USD', 'interval': '5m', 'limit': 1000},
+                headers=headers, timeout=10,
+            )
+            bars_response.raise_for_status()
+            bars_data = bars_response.json()
+            bars = bars_data.get('bars', bars_data.get('data', [])) if isinstance(bars_data, dict) else bars_data
+            if isinstance(bars, list):
+                ohlcv = [
+                    {key: bar[key] for key in ('timestamp', 'open', 'high', 'low', 'close', 'volume') if key in bar}
+                    for bar in bars if isinstance(bar, dict) and all(key in bar for key in ('open', 'high', 'low', 'close'))
+                ] or None
+        except Exception as error:
+            logger.info('GoldPriceDev OHLCV unavailable for %s: %s', symbol, error)
+        return self._normalized_quote(
+            symbol, quote.get('price'), provider['name'], 'goldprice_dev',
+            timestamp=quote.get('timestamp') or quote.get('updated_at'),
+            bid=quote.get('bid'), ask=quote.get('ask'),
+            ohlcv=ohlcv,
+        )
+
+    async def _fetch_mt5(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
+        if symbol != 'XAUUSD' or not getattr(self.system_config, 'mt5_enabled', True):
+            return None
+        try:
+            import MetaTrader5 as mt5
+        except ImportError:
+            logger.info('MT5 provider unavailable: MetaTrader5 package is not installed')
+            return None
+        mt5_symbol = getattr(self.system_config, 'mt5_xauusd_symbol', None) or os.getenv('MT5_XAUUSD_SYMBOL', 'XAUUSD')
+        if not mt5.symbol_select(mt5_symbol, True):
+            return None
+        tick = mt5.symbol_info_tick(mt5_symbol)
+        if tick is None:
+            return None
+        bid = float(getattr(tick, 'bid', 0.0) or 0.0)
+        ask = float(getattr(tick, 'ask', 0.0) or 0.0)
+        last = float(getattr(tick, 'last', 0.0) or 0.0) or (bid + ask) / 2
+        return self._normalized_quote(
+            symbol, last, provider['name'], 'mt5', timestamp=getattr(tick, 'time', None),
+            bid=bid, ask=ask, volume=getattr(tick, 'volume', 0.0),
+        )
+
+    async def _fetch_itick(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
+        if symbol != 'XAUUSD':
+            return None
+        key = os.getenv('ITICK_API_KEY')
+        if not key:
+            return None
+        response = requests.get(
+            f"{provider['base_url']}/forex/ticks", params={'region': 'GB', 'codes': 'XAUUSD'},
+            headers={'token': key, 'Authorization': f'Bearer {key}'}, timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        payload = data.get('data', data) if isinstance(data, dict) else data
+        if isinstance(payload, dict) and 'XAUUSD' in payload:
+            payload = payload['XAUUSD']
+        if isinstance(payload, list):
+            payload = payload[0] if payload else {}
+        return self._normalized_quote(
+            symbol, payload.get('price') or payload.get('last') or payload.get('close') or payload.get('ld'),
+            provider['name'], 'itick', timestamp=payload.get('timestamp') or payload.get('time'),
+            bid=payload.get('bid'), ask=payload.get('ask'), volume=payload.get('volume', payload.get('v', 0.0)),
+        )
+
     async def _fetch_binance(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from Binance API"""
         # Map symbol to Binance format
@@ -456,6 +616,25 @@ class MarketDataAggregator:
         result = response.json().get("chart", {}).get("result", [])
         if not result:
             return None
+
+    def _provider_names_for_symbol(self, symbol: str) -> List[str]:
+        if symbol != 'XAUUSD':
+            return [name for name in self.providers if name in {'binance', 'coingecko', 'alphavantage', 'twelvedata', 'yahoo_finance'}]
+        configured = getattr(self.system_config, 'xauusd_data_providers', None) or os.getenv(
+            'XAUUSD_DATA_PROVIDERS', 'goldprice_dev,goldapi,mt5,itick'
+        )
+        priority = getattr(self.system_config, 'xauusd_provider_priority', None) or os.getenv(
+            'XAUUSD_PROVIDER_PRIORITY', 'goldprice_dev,mt5,goldapi,itick'
+        )
+        enabled = {
+            'goldapi': getattr(self.system_config, 'goldapi_enabled', True),
+            'goldprice_dev': getattr(self.system_config, 'goldprice_dev_enabled', True),
+            'mt5': getattr(self.system_config, 'mt5_enabled', True),
+            'itick': getattr(self.system_config, 'itick_enabled', True),
+        }
+        selected = [name.strip() for name in configured.split(',') if name.strip() in self.providers and enabled.get(name, True)]
+        ordered = [name.strip() for name in priority.split(',') if name.strip() in selected]
+        return ordered + [name for name in selected if name not in ordered]
         chart = result[0]
         timestamps = chart.get("timestamp", [])
         quote_data = (chart.get("indicators", {}).get("quote", [{}]) or [{}])[0]
@@ -509,7 +688,10 @@ class MarketDataAggregator:
             raise ValueError(f"DATA UNAVAILABLE: all provider data for {symbol} was stale or invalid")
         
         # Calculate consensus price (weighted average)
-        consensus_price = self._calculate_consensus_price(prices)
+        if getattr(self.system_config, 'price_consensus_method', 'median') == 'median':
+            consensus_price = float(median(prices.values()))
+        else:
+            consensus_price = self._calculate_consensus_price(prices)
         
         # Calculate consensus bid/ask (weighted average of bid/ask)
         consensus_bid = self._calculate_consensus_bid_ask(valid_data, 'bid')
@@ -520,12 +702,14 @@ class MarketDataAggregator:
         consensus_volume = self._calculate_consensus_volume(valid_data)
         
         # Calculate validation confidence
-        confidence_score = self._calculate_validation_confidence(valid_data, outlier_providers)
+        confidence_score = self._calculate_validation_confidence(
+            valid_data, outlier_providers, len(self._provider_names_for_symbol(symbol))
+        )
         previous_prices = {
             name: data.previous_price for name, data in valid_data.items()
             if data.previous_price is not None and math.isfinite(float(data.previous_price)) and data.previous_price > 0
         }
-        previous_price = self._calculate_consensus_price(previous_prices) if previous_prices else None
+        previous_price = float(median(previous_prices.values())) if previous_prices else None
         
         ohlcv_provider = next(
             (name for name, point in valid_data.items() if point.ohlcv),
@@ -548,12 +732,25 @@ class MarketDataAggregator:
             previous_price=previous_price,
             ohlcv=ohlcv,
             ohlcv_provider=ohlcv_provider,
+            provider_count=len(self._provider_names_for_symbol(symbol)),
+            valid_provider_count=len(valid_data),
+            provider_status={
+                name: ('valid' if name in valid_data else 'stale' if name in stale_providers
+                       else 'outlier' if name in outlier_providers else 'invalid')
+                for name in self._provider_names_for_symbol(symbol)
+                if name in provider_data
+            } | {
+                name: 'unavailable'
+                for name in self._provider_names_for_symbol(symbol)
+                if name not in provider_data
+            },
         )
     
     def _is_data_stale(self, data_point: MarketDataPoint) -> bool:
         """Check if data is stale (older than 1 minute)"""
         age = datetime.now(timezone.utc) - data_point.timestamp
-        return age.total_seconds() > 60
+        threshold = getattr(self.system_config, 'xau_max_stale_seconds', 60) if data_point.symbol == 'XAUUSD' else 60
+        return age.total_seconds() > threshold
     
     def _is_outlier(self, data_point: MarketDataPoint, prices: Dict[str, float]) -> bool:
         """Check if data point is an outlier"""
@@ -561,16 +758,10 @@ class MarketDataAggregator:
             return False
         
         current_price = data_point.price
-        
-        # Calculate mean and standard deviation
-        mean_price = sum(prices.values()) / len(prices)
-        variance = sum((p - mean_price) ** 2 for p in prices.values()) / len(prices)
-        std_dev = variance ** 0.5
-        
-        # Check if current price is more than 2 standard deviations from mean
-        if std_dev > 0:
-            z_score = abs(current_price - mean_price) / std_dev
-            return z_score > 2.0
+        max_deviation = getattr(self.system_config, 'max_price_deviation_percent', 1.0)
+        reference = float(median(prices.values()))
+        if reference > 0 and abs(current_price - reference) / reference * 100 > max_deviation:
+            return True
         
         return False
     
@@ -628,17 +819,18 @@ class MarketDataAggregator:
         volumes = [data_point.volume for data_point in valid_data.values()]
         return sum(volumes) / len(volumes)
     
-    def _calculate_validation_confidence(self, valid_data: Dict[str, MarketDataPoint], 
-                                        outlier_providers: List[str]) -> float:
+    def _calculate_validation_confidence(self, valid_data: Dict[str, MarketDataPoint],
+                                        outlier_providers: List[str], provider_total: int = None) -> float:
         """Calculate confidence score for validation"""
         if not valid_data:
             return 0.0
         
         # Base confidence on number of valid providers
-        base_confidence = min(len(valid_data) / len(self.providers), 1.0)
+        provider_total = provider_total or len(self.providers)
+        base_confidence = min(len(valid_data) / provider_total, 1.0)
         
         # Adjust based on outlier providers
-        outlier_penalty = min(len(outlier_providers) / len(self.providers), 0.5)
+        outlier_penalty = min(len(outlier_providers) / provider_total, 0.5)
         
         # Adjust based on provider health
         healthy_providers = sum(1 for name in valid_data.keys() 
@@ -663,6 +855,8 @@ class MarketDataAggregator:
             health['last_success'] = datetime.now(timezone.utc)
         else:
             health['consecutive_failures'] += 1
+            health['last_failure'] = datetime.now(timezone.utc)
+            health['error_count'] += 1
         
         # Update health status
         if health['consecutive_failures'] >= 3:
@@ -768,6 +962,12 @@ class MarketDataAggregator:
                 status[name] = "unavailable: requests dependency missing"
             elif provider.get('required_key') and not os.getenv(provider['required_key']):
                 status[name] = f"unavailable: missing {provider['required_key']}"
+            elif name == 'mt5':
+                try:
+                    import MetaTrader5  # noqa: F401
+                    status[name] = "configured"
+                except ImportError:
+                    status[name] = "unavailable: MetaTrader5 package missing"
             else:
                 status[name] = "configured"
         return status

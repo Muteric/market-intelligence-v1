@@ -79,6 +79,7 @@ class AITradingIntelligenceBot:
         self.trade_execution_simulator: Optional[TradeExecutionSimulator] = None
         self.reliability_manager: Optional[ReliabilityManager] = None
         self.market_data_status: Dict[str, Dict[str, Any]] = {}
+        self.market_snapshots: Dict[str, Any] = {}
         self.last_reports: Dict[str, str] = {}
         self.telegram_delivery_failures = 0
         
@@ -157,7 +158,7 @@ class AITradingIntelligenceBot:
         """Initialize enhanced components for live market data verification"""
         logger.info("SYSTEM STARTING")
         # Initialize market data aggregator for live price verification
-        self.market_data_aggregator = MarketDataAggregator()
+        self.market_data_aggregator = MarketDataAggregator(system_config=self.config.system)
         provider_status = self.market_data_aggregator.get_provider_status()
         logger.info("Market data engine initialized")
         logger.info("Available providers: %s", ", ".join(k for k, v in provider_status.items() if v == "configured") or "none")
@@ -223,6 +224,7 @@ class AITradingIntelligenceBot:
             validation_result = asyncio.run(
                 self.market_data_aggregator.fetch_market_data(symbol)
             )
+            self.market_snapshots[symbol] = validation_result
             
             # Log consensus pricing information
             logger.info(f"Live market data for {symbol}: "
@@ -237,7 +239,8 @@ class AITradingIntelligenceBot:
                 "stale": validation_result.stale_providers,
                 "confidence": validation_result.confidence_score,
                 "timestamp": validation_result.validation_timestamp,
-                "provider_total": len(self.market_data_aggregator.providers),
+                "provider_total": validation_result.provider_count,
+                "provider_status": validation_result.provider_status or {},
                 "ohlcv_provider": validation_result.ohlcv_provider,
                 "ohlcv_candles": len(validation_result.ohlcv or []),
             }

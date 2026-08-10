@@ -4,6 +4,7 @@ Generates professional-grade Telegram reports for trading signals and portfolio 
 """
 
 import uuid
+import math
 from dataclasses import dataclass, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -128,8 +129,15 @@ class TelegramFormatter:
         bearish_count = sum(item.trend.startswith("bearish") for item in timeframe_items)
         alignment_count = max(bullish_count, bearish_count)
 
-        def value(obj, name, default="UNAVAILABLE"):
-            return getattr(obj, name, default) if obj is not None else default
+        def value(obj, name, default="N/A"):
+            raw = getattr(obj, name, None) if obj is not None else None
+            return raw if raw is not None else default
+
+        def number(obj, name, digits=2):
+            raw = getattr(obj, name, None) if obj is not None else None
+            if not isinstance(raw, (int, float)) or not math.isfinite(float(raw)):
+                return "N/A"
+            return f"{float(raw):.{digits}f}"
 
         lines = [
             "AI TRADING INTELLIGENCE BOT",
@@ -151,13 +159,13 @@ class TelegramFormatter:
             f"Price Confidence: {value(validation, 'confidence_score', 0):.0%}",
             "",
             "INDICATOR EVIDENCE",
-            f"RSI: {value(technical.rsi, 'rsi'):.2f}",
-            f"MACD: {value(technical.macd, 'macd'):.4f}",
+            f"RSI: {number(technical.rsi, 'rsi')}",
+            f"MACD: {number(technical.macd, 'macd', 4)}",
             f"EMA Structure: {value(technical.ema, 'trend')}",
-            f"Bollinger Bands %B: {value(technical.bollinger_bands, 'percent_b'):.4f}",
-            f"ATR: {value(technical.atr, 'atr'):.4f}",
-            f"ADX: {value(technical.adx, 'adx'):.2f}",
-            f"Stochastic: {value(technical.stochastic, 'k'):.2f}",
+            f"Bollinger Bands %B: {number(technical.bollinger_bands, 'percent_b', 4)}",
+            f"ATR: {number(technical.atr, 'atr', 4)}",
+            f"ADX: {number(technical.adx, 'adx')}",
+            f"Stochastic: {number(technical.stochastic, 'k')}",
             f"VWAP: {value(technical.vwap, 'vwap')}",
             f"OBV: {value(technical.obv, 'obv')}",
             f"Ichimoku: {value(technical.ichimoku, 'cloud_direction')}",
@@ -166,6 +174,18 @@ class TelegramFormatter:
             "",
             "MULTI-TIMEFRAME",
         ]
+        source_lines = ["", f"{signal_result.symbol} DATA SOURCES"]
+        statuses = value(validation, 'provider_status', {}) or {}
+        prices = value(validation, 'provider_prices', {}) or {}
+        for provider_name, status in statuses.items():
+            price_text = f"${prices[provider_name]:,.2f}" if provider_name in prices else "unavailable"
+            source_lines.append(f"{provider_name}: {status} {price_text}")
+        source_lines.extend([
+            f"Valid Sources: {source_count}/{source_total}",
+            f"Price Confidence: {value(validation, 'confidence_score', 0):.0%}",
+        ])
+        lines[18:18] = source_lines
+
         if multi:
             for timeframe in ("5M", "15M", "1H", "4H", "Daily"):
                 item = multi.timeframe_analyses.get(timeframe)
@@ -203,6 +223,9 @@ class TelegramFormatter:
             "",
             f"Provider outliers: {', '.join(quality.get('outliers', [])) or 'none'}",
             f"Stale providers: {', '.join(quality.get('stale', [])) or 'none'}",
+            "Provider status: " + ", ".join(
+                f"{name}={status}" for name, status in (quality.get('provider_status') or {}).items()
+            ),
         ])
         return "\n".join(lines)
     

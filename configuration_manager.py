@@ -68,6 +68,18 @@ class SystemConfig:
     backup_enabled: bool = True
     auto_recovery: bool = True
     max_backup_files: int = 10
+    xauusd_data_providers: str = "goldprice_dev,goldapi,mt5,itick"
+    xauusd_provider_priority: str = "goldprice_dev,mt5,goldapi,itick"
+    goldapi_enabled: bool = True
+    goldapi_min_interval_seconds: int = 300
+    goldprice_dev_enabled: bool = True
+    itick_enabled: bool = True
+    mt5_enabled: bool = True
+    mt5_xauusd_symbol: str = "XAUUSD"
+    xau_max_stale_seconds: int = 60
+    max_price_deviation_percent: float = 1.0
+    min_valid_providers: int = 1
+    price_consensus_method: str = "median"
 
 @dataclass
 class AppConfig:
@@ -125,6 +137,17 @@ class ConfigurationManager:
         system = SystemConfig(
             telegram_token=_environment_value('TELEGRAM_TOKEN'),
             telegram_chat_id=_environment_value('TELEGRAM_CHAT_ID', '843487976'),
+            xauusd_data_providers=_environment_value('XAUUSD_DATA_PROVIDERS', 'goldprice_dev,goldapi,mt5,itick'),
+            xauusd_provider_priority=_environment_value('XAUUSD_PROVIDER_PRIORITY', 'goldprice_dev,mt5,goldapi,itick'),
+            goldapi_enabled=_environment_value('GOLDAPI_ENABLED', 'true').lower() == 'true',
+            goldprice_dev_enabled=_environment_value('GOLDPRICEDEV_ENABLED', 'true').lower() == 'true',
+            itick_enabled=_environment_value('ITICK_ENABLED', 'true').lower() == 'true',
+            mt5_enabled=_environment_value('MT5_ENABLED', 'true').lower() == 'true',
+            mt5_xauusd_symbol=_environment_value('MT5_XAUUSD_SYMBOL', 'XAUUSD'),
+            xau_max_stale_seconds=int(_environment_value('XAU_MAX_STALE_SECONDS', '60')),
+            max_price_deviation_percent=float(_environment_value('MAX_PRICE_DEVIATION_PERCENT', '1.0')),
+            min_valid_providers=int(_environment_value('MIN_VALID_PROVIDERS', '1')),
+            price_consensus_method=_environment_value('PRICE_CONSENSUS_METHOD', 'median'),
         )
         
         return AppConfig(
@@ -190,7 +213,19 @@ class ConfigurationManager:
             data_directory=system_data.get('data_directory', 'data'),
             backup_enabled=system_data.get('backup_enabled', True),
             auto_recovery=system_data.get('auto_recovery', True),
-            max_backup_files=int(system_data.get('max_backup_files', 10))
+            max_backup_files=int(system_data.get('max_backup_files', 10)),
+            xauusd_data_providers=system_data.get('xauusd_data_providers', 'goldprice_dev,goldapi,mt5,itick'),
+            xauusd_provider_priority=system_data.get('xauusd_provider_priority', 'goldprice_dev,mt5,goldapi,itick'),
+            goldapi_enabled=bool(system_data.get('goldapi_enabled', True)),
+            goldapi_min_interval_seconds=int(system_data.get('goldapi_min_interval_seconds', 300)),
+            goldprice_dev_enabled=bool(system_data.get('goldprice_dev_enabled', True)),
+            itick_enabled=bool(system_data.get('itick_enabled', True)),
+            mt5_enabled=bool(system_data.get('mt5_enabled', True)),
+            mt5_xauusd_symbol=system_data.get('mt5_xauusd_symbol', 'XAUUSD'),
+            xau_max_stale_seconds=int(system_data.get('xau_max_stale_seconds', 60)),
+            max_price_deviation_percent=float(system_data.get('max_price_deviation_percent', 1.0)),
+            min_valid_providers=int(system_data.get('min_valid_providers', 1)),
+            price_consensus_method=system_data.get('price_consensus_method', 'median')
         )
         
         return AppConfig(
