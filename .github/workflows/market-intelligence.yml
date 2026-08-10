@@ -17,6 +17,11 @@ jobs:
       contents: write
     env:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      GOLD_API: ${{ secrets.GOLD_API }}
+      ITICK_API_KEY: ${{ secrets.ITICK_API_KEY }}
+      TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+      ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+      COIN_GECKO_API: ${{ secrets.COIN_GECKO_API }}
       TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || '843487976' }}
 
     steps:

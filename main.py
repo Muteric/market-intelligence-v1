@@ -8,6 +8,7 @@ import logging
 import time
 import asyncio
 import os
+import hashlib
 from urllib import parse, request
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
@@ -82,6 +83,7 @@ class AITradingIntelligenceBot:
         self.market_snapshots: Dict[str, Any] = {}
         self.last_reports: Dict[str, str] = {}
         self.telegram_delivery_failures = 0
+        self._telegram_message_times: Dict[str, datetime] = {}
         
         # Initialize components
         self._initialize_components()
@@ -513,10 +515,21 @@ class AITradingIntelligenceBot:
     
     def _send_telegram_message(self, message: str) -> bool:
         """Send a report when Telegram credentials are available; otherwise log it."""
+        if len(message) > 3900:
+            chunks = [message[index:index + 3900] for index in range(0, len(message), 3900)]
+            return all(self._send_telegram_message(chunk) for chunk in chunks)
+        digest = hashlib.sha256(message.encode('utf-8')).hexdigest()
+        now = datetime.now(timezone.utc)
+        dedupe_seconds = self.config.system.notification_dedupe_seconds
+        last_sent = self._telegram_message_times.get(digest)
+        if last_sent and (now - last_sent).total_seconds() < dedupe_seconds:
+            logger.info("Duplicate Telegram notification suppressed")
+            return True
         token = self.config.system.telegram_token or os.getenv("TELEGRAM_TOKEN", "")
         chat_id = self.config.system.telegram_chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         if not token or not chat_id:
             logger.info("Telegram not configured; report generated locally (%d characters)", len(message))
+            self._telegram_message_times[digest] = now
             return True
         try:
             payload = parse.urlencode({"chat_id": chat_id, "text": message}).encode()
@@ -526,7 +539,10 @@ class AITradingIntelligenceBot:
                 method="POST",
             )
             with request.urlopen(req, timeout=10) as response:
-                return 200 <= response.status < 300
+                success = 200 <= response.status < 300
+                if success:
+                    self._telegram_message_times[digest] = now
+                return success
         except Exception:
             self.telegram_delivery_failures += 1
             logger.exception("Telegram delivery failed")

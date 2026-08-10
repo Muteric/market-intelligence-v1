@@ -114,7 +114,7 @@ class MarketDataAggregator:
             },
             'priority': 3,
             'weight': 0.7,
-            'required_key': 'ALPHA_VANTAGE_API_KEY'
+            'required_key': 'ALPHAVANTAGE_API_KEY'
         }
         
         # Twelve Data API (BTCUSD, XAUUSD, technical indicators)
@@ -127,7 +127,7 @@ class MarketDataAggregator:
             },
             'priority': 4,
             'weight': 0.7,
-            'required_key': 'TWELVE_DATA_API_KEY'
+            'required_key': 'TWELVEDATA_API_KEY'
         }
         
         # Yahoo Finance API (community validation)
@@ -144,7 +144,7 @@ class MarketDataAggregator:
 
         self.providers['goldapi'] = {
             'name': 'GoldAPI', 'base_url': os.getenv('GOLDAPI_BASE_URL', 'https://www.goldapi.io/api'),
-            'required_key': 'GOLDAPI_KEY', 'weight': 1.0,
+            'required_key': 'GOLD_API', 'weight': 1.0,
         }
         self.providers['goldprice_dev'] = {
             'name': 'GoldPriceDev', 'base_url': os.getenv('GOLDPRICEDEV_BASE_URL', 'https://api.goldprice.dev'),
@@ -208,7 +208,7 @@ class MarketDataAggregator:
             return None
         provider = self.providers[provider_name]
         required_key = provider.get('required_key')
-        if required_key and not os.getenv(required_key):
+        if required_key and not self._secret_available(required_key):
             logger.info("Provider %s unavailable: missing %s", provider_name, required_key)
             return None
         cached = self.provider_cache.get((symbol, provider_name))
@@ -276,7 +276,7 @@ class MarketDataAggregator:
             return None
         response = requests.get(
             f"{provider['base_url']}/XAU/USD",
-            headers={'x-access-token': os.getenv('GOLDAPI_KEY', '')}, timeout=10,
+            headers={'x-access-token': self._secret_value('GOLD_API')}, timeout=10,
         )
         response.raise_for_status()
         data = response.json()
@@ -290,7 +290,7 @@ class MarketDataAggregator:
         if symbol != 'XAUUSD':
             return None
         headers = {}
-        key = os.getenv('GOLDPRICEDEV_API_KEY') or os.getenv('GP_KEY')
+        key = self._secret_value('GOLDPRICEDEV_API_KEY') or self._secret_value('GP_KEY')
         if key:
             headers['Authorization'] = f'Bearer {key}'
         response = requests.get(
@@ -351,7 +351,7 @@ class MarketDataAggregator:
     async def _fetch_itick(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         if symbol != 'XAUUSD':
             return None
-        key = os.getenv('ITICK_API_KEY')
+        key = self._secret_value('ITICK_API_KEY')
         if not key:
             return None
         response = requests.get(
@@ -948,11 +948,26 @@ class MarketDataAggregator:
     def _get_api_key(self, provider_name: str) -> str:
         """Get API key for provider"""
         api_keys = {
-            'alphavantage': 'ALPHA_VANTAGE_API_KEY',
-            'twelvedata': 'TWELVE_DATA_API_KEY'
+            'alphavantage': 'ALPHAVANTAGE_API_KEY',
+            'twelvedata': 'TWELVEDATA_API_KEY'
         }
         env_name = api_keys.get(provider_name)
-        return os.getenv(env_name, '') if env_name else ''
+        return self._secret_value(env_name) if env_name else ''
+
+    @staticmethod
+    def _secret_value(name: Optional[str]) -> str:
+        aliases = {
+            'GOLD_API': ('GOLDAPI_KEY',),
+            'ALPHAVANTAGE_API_KEY': ('ALPHA_VANTAGE_API_KEY',),
+            'TWELVEDATA_API_KEY': ('TWELVE_DATA_API_KEY',),
+        }
+        if not name:
+            return ''
+        return os.getenv(name, '') or next((os.getenv(alias, '') for alias in aliases.get(name, ())), '')
+
+    @classmethod
+    def _secret_available(cls, name: Optional[str]) -> bool:
+        return bool(cls._secret_value(name))
 
     def get_provider_status(self) -> Dict[str, str]:
         """Return configured/available status without contacting providers."""
@@ -960,7 +975,7 @@ class MarketDataAggregator:
         for name, provider in self.providers.items():
             if requests is None:
                 status[name] = "unavailable: requests dependency missing"
-            elif provider.get('required_key') and not os.getenv(provider['required_key']):
+            elif provider.get('required_key') and not self._secret_available(provider['required_key']):
                 status[name] = f"unavailable: missing {provider['required_key']}"
             elif name == 'mt5':
                 try:

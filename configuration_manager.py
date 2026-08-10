@@ -80,6 +80,8 @@ class SystemConfig:
     max_price_deviation_percent: float = 1.0
     min_valid_providers: int = 1
     price_consensus_method: str = "median"
+    execution_mode: str = "simulation"
+    notification_dedupe_seconds: int = 900
 
 @dataclass
 class AppConfig:
@@ -148,6 +150,8 @@ class ConfigurationManager:
             max_price_deviation_percent=float(_environment_value('MAX_PRICE_DEVIATION_PERCENT', '1.0')),
             min_valid_providers=int(_environment_value('MIN_VALID_PROVIDERS', '1')),
             price_consensus_method=_environment_value('PRICE_CONSENSUS_METHOD', 'median'),
+            execution_mode=_environment_value('EXECUTION_MODE', 'simulation'),
+            notification_dedupe_seconds=int(_environment_value('NOTIFICATION_DEDUPE_SECONDS', '900')),
         )
         
         return AppConfig(
@@ -225,7 +229,9 @@ class ConfigurationManager:
             xau_max_stale_seconds=int(system_data.get('xau_max_stale_seconds', 60)),
             max_price_deviation_percent=float(system_data.get('max_price_deviation_percent', 1.0)),
             min_valid_providers=int(system_data.get('min_valid_providers', 1)),
-            price_consensus_method=system_data.get('price_consensus_method', 'median')
+            price_consensus_method=system_data.get('price_consensus_method', 'median'),
+            execution_mode=system_data.get('execution_mode', 'simulation'),
+            notification_dedupe_seconds=int(system_data.get('notification_dedupe_seconds', 900))
         )
         
         return AppConfig(

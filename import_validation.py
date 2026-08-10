@@ -18,6 +18,7 @@ REQUIRED = {
     "telegram_formatter": ["TelegramFormatter"],
     "market_regime_detector": ["MarketRegimeDetector"],
     "risk_calculator": ["RiskCalculator"],
+    "mt5_execution_bridge": ["MT5ExecutionBridge", "ExecutionMode"],
 }
 
 

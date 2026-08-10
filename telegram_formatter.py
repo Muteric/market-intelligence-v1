@@ -99,6 +99,33 @@ class TelegramFormatter:
         
         return self._assemble_report(report)
 
+    def format_new_buy_signal(self, signal_result: SignalResult) -> str:
+        """Format a BUY event using the authoritative signal report."""
+        return self.format_signal_report(signal_result)
+
+    def format_new_sell_signal(self, signal_result: SignalResult) -> str:
+        """Format a SELL event using the authoritative signal report."""
+        return self.format_signal_report(signal_result)
+
+    def format_hold_update(self, signal_result: SignalResult) -> str:
+        """Format a HOLD update without changing portfolio state."""
+        return self.format_signal_report(signal_result)
+
+    def format_trade_event(self, event: str, details: Dict[str, Any]) -> str:
+        """Format an event notification from supplied, already-calculated values."""
+        lines = ["AI TRADING INTELLIGENCE BOT", "", event.upper()]
+        lines.extend(f"{key}: {value}" for key, value in details.items())
+        return "\n".join(lines)
+
+    def format_provider_failure(self, provider: str, error: str) -> str:
+        return self.format_trade_event("DATA PROVIDER FAILURE", {"Provider": provider, "Error": error})
+
+    def format_provider_recovery(self, provider: str) -> str:
+        return self.format_trade_event("PROVIDER RECOVERY", {"Provider": provider, "Status": "VALIDATED"})
+
+    def format_system_error(self, error: str) -> str:
+        return self.format_trade_event("SYSTEM ERROR", {"Error": error})
+
     def _format_verified_intelligence_report(self, signal_result: SignalResult) -> str:
         """Format the production report from validated and computed values only."""
         ai = signal_result.ai_decision_result
