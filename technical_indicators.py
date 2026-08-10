@@ -203,8 +203,8 @@ class TechnicalIndicators:
         highs = self.high_history.get(symbol, [])
         lows = self.low_history.get(symbol, [])
         
-        if len(prices) < 20:
-            raise ValueError(f"Insufficient data for {symbol}. Need at least 20 data points.")
+        if len(prices) < 2:
+            raise ValueError(f"DATA UNAVAILABLE: insufficient price history for {symbol}")
         
         # Calculate individual indicators
         rsi = self._calculate_rsi(symbol)

@@ -67,6 +67,9 @@ class AITradingIntelligenceBot:
         self.ai_decision_engine: Optional[AIDecisionEngine] = None
         self.trade_execution_simulator: Optional[TradeExecutionSimulator] = None
         self.reliability_manager: Optional[ReliabilityManager] = None
+        self.market_data_status: Dict[str, Dict[str, Any]] = {}
+        self.last_reports: Dict[str, str] = {}
+        self.telegram_delivery_failures = 0
         
         # Initialize components
         self._initialize_components()
@@ -140,14 +143,21 @@ class AITradingIntelligenceBot:
     
     def _initialize_enhanced_components(self) -> None:
         """Initialize enhanced components for live market data verification"""
+        logger.info("SYSTEM STARTING")
         # Initialize market data aggregator for live price verification
         self.market_data_aggregator = MarketDataAggregator()
+        provider_status = self.market_data_aggregator.get_provider_status()
+        logger.info("Market data engine initialized")
+        logger.info("Available providers: %s", ", ".join(k for k, v in provider_status.items() if v == "configured") or "none")
+        logger.info("Unavailable providers: %s", ", ".join(k for k, v in provider_status.items() if v != "configured") or "none")
         
         # Initialize technical indicators for enhanced analysis
         self.technical_indicators = TechnicalIndicators()
+        logger.info("Technical analysis initialized")
         
         # Initialize multi-timeframe analyzer for comprehensive analysis
         self.multi_timeframe_analyzer = MultiTimeframeAnalyzer()
+        logger.info("Multi-timeframe analysis initialized")
         
         # Initialize AI decision engine for enhanced signal generation
         self.ai_decision_engine = AIDecisionEngine(
@@ -156,6 +166,7 @@ class AITradingIntelligenceBot:
             self.config.portfolio,
             self.performance_tracker,
         )
+        logger.info("AI decision engine initialized")
         
         # Initialize trade execution simulator for testing
         self.trade_execution_simulator = TradeExecutionSimulator(
@@ -166,6 +177,8 @@ class AITradingIntelligenceBot:
         
         # Initialize reliability manager for system monitoring
         self.reliability_manager = ReliabilityManager()
+        logger.info("Portfolio manager initialized")
+        logger.info("Telegram initialized")
 
     def _validate_startup(self) -> None:
         """Validate initialized components before a scan begins."""
@@ -189,6 +202,7 @@ class AITradingIntelligenceBot:
             logger.info("[OK] %s loaded", name)
         logger.info("[OK] Telegram configuration loaded (token=%s)",
                     "available" if self.config.system.telegram_token else "not configured")
+        logger.info("SYSTEM READY")
     
     def _get_live_market_data(self, symbol: str) -> Optional[Tuple[float, float]]:
         """Get live market data with consensus pricing from multiple sources"""
@@ -204,9 +218,25 @@ class AITradingIntelligenceBot:
                        f"Confidence: {validation_result.confidence_score:.1%}, "
                        f"Providers: {len(validation_result.provider_prices)}, "
                        f"Outliers: {len(validation_result.outlier_providers)}")
+            self.market_data_status[symbol] = {
+                "status": "validated",
+                "provider_prices": validation_result.provider_prices,
+                "outliers": validation_result.outlier_providers,
+                "stale": validation_result.stale_providers,
+                "confidence": validation_result.confidence_score,
+                "timestamp": validation_result.validation_timestamp,
+            }
+            logger.info("%s price validated", symbol)
+
+            previous_prices = self.technical_indicators.price_history.get(symbol, []) if self.technical_indicators else []
+            previous_price = validation_result.previous_price or (previous_prices[-1] if previous_prices else None)
             
             # Update technical indicators with current price
             if self.technical_indicators:
+                if not previous_prices and previous_price is not None:
+                    self.technical_indicators.update_price_data(
+                        symbol, previous_price, validation_result.consensus_volume
+                    )
                 self.technical_indicators.update_price_data(
                     symbol,
                     validation_result.consensus_price,
@@ -215,6 +245,11 @@ class AITradingIntelligenceBot:
             
             # Update multi-timeframe analyzer with current price
             if self.multi_timeframe_analyzer:
+                if not previous_prices and previous_price is not None:
+                    for timeframe in ("5M", "15M", "1H", "4H", "Daily"):
+                        self.multi_timeframe_analyzer.update_timeframe_data(
+                            symbol, timeframe, previous_price, validation_result.consensus_volume
+                        )
                 self.multi_timeframe_analyzer.update_timeframe_data(
                     symbol, "5M", validation_result.consensus_price, validation_result.consensus_volume
                 )
@@ -231,14 +266,16 @@ class AITradingIntelligenceBot:
                     symbol, "Daily", validation_result.consensus_price, validation_result.consensus_volume
                 )
             
-            # Get previous price from validation cache or use consensus price
-            previous_price = validation_result.consensus_price * 0.99  # Simple 1% change for demo
+            if previous_price is None:
+                logger.warning("%s previous price unavailable; awaiting another validated observation", symbol)
+                return None
             
             return validation_result.consensus_price, previous_price
             
         except Exception as e:
             logger.error(f"Error fetching live market data for {symbol}: {e}")
-            logger.warning(f"No valid market data for {symbol}; skipping this asset")
+            self.market_data_status[symbol] = {"status": "unavailable", "reason": str(e)}
+            logger.warning("%s DATA UNAVAILABLE; skipping tradeable analysis", symbol)
             return None
     
     def _load_existing_data(self) -> None:
@@ -264,7 +301,7 @@ class AITradingIntelligenceBot:
         except Exception as e:
             logger.error(f"Error loading existing data: {e}")
     
-    def run_scan(self) -> None:
+    def run_scan(self, execute_trades: bool = True) -> Dict[str, str]:
         """Run a complete scan cycle with enhanced features"""
         logger.info("Starting enhanced scan cycle")
         
@@ -275,10 +312,13 @@ class AITradingIntelligenceBot:
             # Generate signals for each asset with enhanced analysis
             signal_results: Dict[str, SignalResult] = {}
             
+            unavailable_assets = []
             for symbol, analyzer in self.market_analyzers.items():
+                logger.info("%s analysis started", symbol)
                 # Get current price from market data aggregator with live verification
                 market_data = self._get_live_market_data(symbol)
                 if market_data is None:
+                    unavailable_assets.append(symbol)
                     continue
                 current_price, previous_price = market_data
                 
@@ -287,33 +327,46 @@ class AITradingIntelligenceBot:
                     symbol, current_price, previous_price
                 )
                 
-                # Generate signal with enhanced AI decision engine
-                signal_result = self.signal_engine.generate_signal(
-                    symbol, market_analysis
-                )
-                
-                # Apply AI decision engine for enhanced analysis
-                if self.ai_decision_engine:
+                try:
                     technical_indicators = self.technical_indicators.calculate_all_indicators(symbol)
                     multi_timeframe = self.multi_timeframe_analyzer.analyze_multi_timeframe(symbol)
-                    
                     ai_decision = self.ai_decision_engine.generate_decision(
                         symbol, market_analysis, technical_indicators, multi_timeframe,
                         current_price, previous_price
                     )
-                    
-                    # Update signal with AI decision insights
-                    signal_result.decision = ai_decision.decision
-                    signal_result.confidence = ai_decision.confidence_score
-                    signal_result.reasoning = ai_decision.ai_explanation.split('; ') if ai_decision.ai_explanation else market_analysis.reasoning
+                    signal_result = self.signal_engine.generate_signal(
+                        symbol,
+                        market_analysis,
+                        decision_override=ai_decision.decision,
+                        execute=execute_trades,
+                    )
+                    self.asset_manager.update_floating_pnl(symbol, current_price)
+                    signal_result.ai_decision_result = ai_decision
+                    signal_result.validation_result = self._get_validation_result(symbol)
+                    signal_result.technical_indicators = technical_indicators
+                    signal_result.multi_timeframe = multi_timeframe
+                    signal_result.risk_metrics = ai_decision.risk_metrics
+                    signal_result.portfolio_metrics = self.portfolio_manager.update_portfolio()
+                    signal_result.data_quality = self.market_data_status.get(symbol, {})
+                except Exception as exc:
+                    logger.error("%s analysis unavailable: %s", symbol, exc)
+                    self.market_data_status[symbol] = {"status": "unavailable", "reason": str(exc)}
+                    unavailable_assets.append(symbol)
+                    continue
                 
                 signal_results[symbol] = signal_result
+                logger.info("%s decision: %s", symbol, signal_result.decision)
+                logger.info("%s confidence: %.0f%%", symbol, signal_result.confidence * 100)
                 
                 # Save signal to storage
                 self._save_signal(signal_result)
             
             # Send enhanced Telegram reports
             self._send_enhanced_reports(signal_results)
+            for symbol in unavailable_assets:
+                report = self._generate_data_unavailable_report(symbol)
+                self.last_reports[symbol] = report
+                self._send_telegram_message(report)
             
             # Update performance tracker
             self.performance_tracker.track_performance()
@@ -330,12 +383,28 @@ class AITradingIntelligenceBot:
             self.trade_storage.backup_data()
             
             logger.info("Enhanced scan cycle completed successfully")
+            return self.last_reports.copy()
             
         except Exception as e:
             logger.error(f"Error during enhanced scan cycle: {e}")
             # Send alert to Telegram
             self._send_telegram_message(f"⚠️ SCAN ERROR: {e}")
     
+    def _get_validation_result(self, symbol: str) -> Optional[PriceValidationResult]:
+        """Return the current validated result for report enrichment."""
+        return self.market_data_aggregator.get_cached_validation(symbol)
+
+    def _generate_data_unavailable_report(self, symbol: str) -> str:
+        status = self.market_data_status.get(symbol, {})
+        reason = status.get("reason", "No validated market data")
+        return (
+            "AI TRADING INTELLIGENCE BOT\n\n"
+            f"SIGNAL\nAsset: {symbol}\nDecision: DATA UNAVAILABLE\n"
+            "Tradeable signal: NO\n\n"
+            f"Reason: {reason}\n"
+            "No price, projected PnL, BUY, or SELL has been invented.\n"
+        )
+
     def _save_signal(self, signal_result: SignalResult) -> None:
         """Save signal to storage"""
         try:
@@ -384,38 +453,30 @@ class AITradingIntelligenceBot:
     def _send_enhanced_reports(self, signal_results: Dict[str, SignalResult]) -> None:
         """Send enhanced Telegram reports with comprehensive intelligence"""
         try:
-            # Send enhanced signal report
-            if signal_results:
-                # Use the first signal result as reference
-                first_symbol = list(signal_results.keys())[0]
-                signal_result = signal_results[first_symbol]
-                
-                # Generate enhanced report with all required sections
+            # Send one verified intelligence report per analyzed asset.
+            for symbol, signal_result in signal_results.items():
                 enhanced_report = self._generate_enhanced_report(signal_result)
-                
-                # Send to Telegram (placeholder)
                 self._send_telegram_message(enhanced_report)
+                self.last_reports[symbol] = enhanced_report
+                logger.info("%s Telegram report sent", symbol)
             
             # Send enhanced portfolio report
             portfolio_report = self._generate_enhanced_portfolio_report()
             
             # Send to Telegram (placeholder)
             self._send_telegram_message(portfolio_report)
+            self.last_reports["PORTFOLIO"] = portfolio_report
             
         except Exception as e:
             logger.error(f"Error sending enhanced reports: {e}")
     
     def _generate_enhanced_report(self, signal_result: SignalResult) -> str:
         """Generate enhanced intelligence report for a symbol"""
-        # This would use the enhanced Telegram formatter
-        # For now, return a placeholder
-        return f"Enhanced Report for {signal_result.symbol}\nDecision: {signal_result.decision}\nConfidence: {signal_result.confidence}"
+        return self.telegram_formatter.format_signal_report(signal_result, ReportFormat.PROFESSIONAL)
     
     def _generate_enhanced_portfolio_report(self) -> str:
         """Generate enhanced portfolio intelligence report"""
-        # This would use the enhanced Telegram formatter
-        # For now, return a placeholder
-        return "Enhanced Portfolio Report\nAccount Balance: $100.00\nTotal PnL: $0.00"
+        return self.telegram_formatter.format_portfolio_report(ReportFormat.PROFESSIONAL)
     
     def _handle_risk_alerts(self, alerts: List[Any]) -> None:
         """Handle risk alerts"""
@@ -456,7 +517,7 @@ class AITradingIntelligenceBot:
         token = self.config.system.telegram_token or os.getenv("TELEGRAM_TOKEN", "")
         chat_id = self.config.system.telegram_chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
         if not token or not chat_id:
-            logger.info("Telegram not configured; report generated: %s", message)
+            logger.info("Telegram not configured; report generated locally (%d characters)", len(message))
             return True
         try:
             payload = parse.urlencode({"chat_id": chat_id, "text": message}).encode()
@@ -468,6 +529,7 @@ class AITradingIntelligenceBot:
             with request.urlopen(req, timeout=10) as response:
                 return 200 <= response.status < 300
         except Exception:
+            self.telegram_delivery_failures += 1
             logger.exception("Telegram delivery failed")
             return False
     

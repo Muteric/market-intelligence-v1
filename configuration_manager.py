@@ -9,6 +9,20 @@ from dataclasses import dataclass, asdict
 from typing import Dict, Any
 from pathlib import Path
 
+
+def _environment_value(name: str, default: str = "") -> str:
+    """Read process environment first, then an optional local .env file."""
+    value = os.getenv(name)
+    if value:
+        return value
+    dotenv = Path(".env")
+    if dotenv.exists():
+        for line in dotenv.read_text(encoding="utf-8").splitlines():
+            key, separator, raw_value = line.partition("=")
+            if separator and key.strip() == name:
+                return raw_value.strip().strip('"').strip("'")
+    return default
+
 @dataclass
 class PortfolioConfig:
     """Portfolio configuration settings"""
@@ -106,8 +120,8 @@ class ConfigurationManager:
         
         trading = TradingConfig()
         system = SystemConfig(
-            telegram_token=os.getenv('TELEGRAM_TOKEN', ''),
-            telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID', '843487976'),
+            telegram_token=_environment_value('TELEGRAM_TOKEN'),
+            telegram_chat_id=_environment_value('TELEGRAM_CHAT_ID', '843487976'),
         )
         
         return AppConfig(
@@ -154,8 +168,8 @@ class ConfigurationManager:
         
         system_data = data.get('system', {})
         system = SystemConfig(
-            telegram_token=system_data.get('telegram_token', '') or os.getenv('TELEGRAM_TOKEN', ''),
-            telegram_chat_id=system_data.get('telegram_chat_id', '') or os.getenv('TELEGRAM_CHAT_ID', '843487976'),
+            telegram_token=system_data.get('telegram_token', '') or _environment_value('TELEGRAM_TOKEN'),
+            telegram_chat_id=system_data.get('telegram_chat_id', '') or _environment_value('TELEGRAM_CHAT_ID', '843487976'),
             alert_state_file=system_data.get('alert_state_file', '.market_alert_state.json'),
             trade_history_file=system_data.get('trade_history_file', 'trade_history.json'),
             portfolio_stats_file=system_data.get('portfolio_stats_file', 'portfolio_stats.json'),
@@ -179,7 +193,10 @@ class ConfigurationManager:
             'portfolio': asdict(self._config.portfolio),
             'assets': {symbol: asdict(asset) for symbol, asset in self._config.assets.items()},
             'trading': asdict(self._config.trading),
-            'system': asdict(self._config.system)
+            'system': {
+                **asdict(self._config.system),
+                'telegram_token': '',
+            }
         }
     
     def _save_config(self) -> None:

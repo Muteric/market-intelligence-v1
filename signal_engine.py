@@ -51,6 +51,13 @@ class SignalResult:
     leverage: float = None
     expected_pnl: float = 0.0
     ai_explanation: str = None
+    ai_decision_result: Any = None
+    validation_result: Any = None
+    technical_indicators: Any = None
+    multi_timeframe: Any = None
+    risk_metrics: Any = None
+    portfolio_metrics: Any = None
+    data_quality: Dict[str, Any] = None
     technical_confidence: float = 0.0
     fundamental_confidence: float = 0.0
     sentiment_score: float = 0.0
@@ -339,7 +346,8 @@ class SignalEngine:
         self.trading_config = trading_config
         self.signal_history: Dict[str, List[SignalResult]] = {}
     
-    def generate_signal(self, symbol: str, market_analysis: MarketAnalysis) -> SignalResult:
+    def generate_signal(self, symbol: str, market_analysis: MarketAnalysis,
+                        decision_override: str = None, execute: bool = True) -> SignalResult:
         """Generate trading signal for an asset"""
         # Get current asset state
         asset_state = self.asset_manager.get_asset_state(symbol)
@@ -347,15 +355,22 @@ class SignalEngine:
             raise ValueError(f"Asset {symbol} not found")
         
         # Determine decision based on market analysis
-        decision = self._determine_decision(market_analysis)
+        decision = next(
+            (candidate for candidate in SignalDecision if candidate.value == decision_override),
+            None,
+        ) if decision_override else None
+        decision = decision or self._determine_decision(market_analysis)
         
         # Calculate confidence
         confidence = market_analysis.confidence_score
         
         # Determine action based on decision and current positions
-        action_taken, new_positions, closed_positions = self._execute_decision(
-            symbol, decision, market_analysis.current_price, confidence
-        )
+        if execute:
+            action_taken, new_positions, closed_positions = self._execute_decision(
+                symbol, decision, market_analysis.current_price, confidence
+            )
+        else:
+            action_taken, new_positions, closed_positions = "DRY RUN - No position changes", [], []
         
         # Create signal result
         signal_result = SignalResult(

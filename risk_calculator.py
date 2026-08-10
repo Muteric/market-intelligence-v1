@@ -61,11 +61,7 @@ class RiskCalculator:
         atr_result = getattr(technical_indicators, "atr", None)
         atr = float(getattr(atr_result, "atr", atr_result or current_price * 0.01))
 
-        volatility = getattr(
-            market_analysis,
-            "volatility",
-            "Medium"
-        )
+        volatility = str(getattr(market_analysis, "volatility_score", "medium")).lower()
 
         trend_strength = float(getattr(market_analysis, "strength_score", 50))
         if trend_strength <= 1:
@@ -104,11 +100,11 @@ class RiskCalculator:
 
         risk_score = 100
 
-        if volatility == "High":
+        if volatility == "high":
 
             risk_score -= 25
 
-        elif volatility == "Medium":
+        elif volatility == "medium":
 
             risk_score -= 10
 
@@ -134,11 +130,11 @@ class RiskCalculator:
 
         # ---------- Volatility ----------
 
-        if volatility == "High":
+        if volatility == "high":
 
             volatility_risk = "High"
 
-        elif volatility == "Medium":
+        elif volatility == "medium":
 
             volatility_risk = "Medium"
 

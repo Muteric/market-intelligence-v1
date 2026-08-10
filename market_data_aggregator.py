@@ -16,6 +16,8 @@ try:
 except ImportError:  # Optional at import time; requirements installs it in CI.
     requests = None
 import random
+import os
+import math
 
 from configuration_manager import AssetConfig
 
@@ -34,6 +36,7 @@ class MarketDataPoint:
     provider: str
     source: str
     status: str = "valid"
+    previous_price: Optional[float] = None
     
 @dataclass
 class PriceValidationResult:
@@ -49,6 +52,7 @@ class PriceValidationResult:
     stale_providers: List[str]
     validation_timestamp: datetime
     confidence_score: float
+    previous_price: Optional[float] = None
 
 class MarketDataAggregator:
     """Multi-source market data aggregation with price validation"""
@@ -98,7 +102,8 @@ class MarketDataAggregator:
                 'time_series': '/TIME_SERIES_DAILY'
             },
             'priority': 3,
-            'weight': 0.7
+            'weight': 0.7,
+            'required_key': 'ALPHA_VANTAGE_API_KEY'
         }
         
         # Twelve Data API (BTCUSD, XAUUSD, technical indicators)
@@ -110,7 +115,8 @@ class MarketDataAggregator:
                 'quote': '/quote'
             },
             'priority': 4,
-            'weight': 0.7
+            'weight': 0.7,
+            'required_key': 'TWELVE_DATA_API_KEY'
         }
         
         # Yahoo Finance API (community validation)
@@ -171,6 +177,10 @@ class MarketDataAggregator:
             logger.warning("Provider %s unavailable: requests dependency is not installed", provider_name)
             return None
         provider = self.providers[provider_name]
+        required_key = provider.get('required_key')
+        if required_key and not os.getenv(required_key):
+            logger.info("Provider %s unavailable: missing %s", provider_name, required_key)
+            return None
         start_time = time.time()
         
         try:
@@ -211,6 +221,7 @@ class MarketDataAggregator:
         
         # Parse Binance response
         price = float(data['lastPrice'])
+        previous_price = float(data.get('prevClosePrice', 0)) or None
         bid = float(data['bidPrice'])
         ask = float(data['askPrice'])
         volume = float(data['volume'])
@@ -227,7 +238,8 @@ class MarketDataAggregator:
             volume=volume,
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
-            source='binance'
+            source='binance',
+            previous_price=previous_price
         )
     
     async def _fetch_coingecko(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
@@ -255,6 +267,8 @@ class MarketDataAggregator:
         
         # CoinGecko provides only price, need to estimate bid/ask
         price = price_data['usd']
+        change = price_data.get('usd_24h_change')
+        previous_price = price / (1 + (float(change) / 100)) if change is not None and float(change) != -100 else None
         
         # Estimate bid/ask with small spread
         spread_percent = 0.001  # 0.1% spread
@@ -273,7 +287,8 @@ class MarketDataAggregator:
             volume=volume,
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
-            source='coingecko'
+            source='coingecko',
+            previous_price=previous_price
         )
     
     async def _fetch_alphavantage(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
@@ -395,7 +410,8 @@ class MarketDataAggregator:
             volume=volume,
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
-            source='yahoo_finance'
+            source='yahoo_finance',
+            previous_price=quote.get('regularMarketPreviousClose')
         )
     
     def _validate_and_consensus(self, symbol: str, provider_data: Dict[str, MarketDataPoint]) -> PriceValidationResult:
@@ -408,11 +424,17 @@ class MarketDataAggregator:
         # Extract prices from all providers
         prices = {}
         valid_data = {}
+        stale_providers = []
         
         for provider_name, data_point in provider_data.items():
             # Check if data is stale (older than 1 minute)
             if self._is_data_stale(data_point):
                 logger.warning(f"Data from {provider_name} for {symbol} is stale")
+                stale_providers.append(provider_name)
+                continue
+
+            if not math.isfinite(float(data_point.price)) or data_point.price <= 0:
+                logger.warning(f"Data from {provider_name} for {symbol} has an invalid price")
                 continue
             
             # Check for outliers
@@ -424,11 +446,7 @@ class MarketDataAggregator:
             valid_data[provider_name] = data_point
         
         if not valid_data:
-            # If all data is invalid, use the most recent valid data
-            logger.warning(f"All provider data for {symbol} is invalid, using most recent")
-            latest_data = max(provider_data.values(), key=lambda x: x.timestamp)
-            prices = {list(provider_data.keys())[0]: latest_data.price}
-            valid_data = {list(provider_data.keys())[0]: latest_data}
+            raise ValueError(f"DATA UNAVAILABLE: all provider data for {symbol} was stale or invalid")
         
         # Calculate consensus price (weighted average)
         consensus_price = self._calculate_consensus_price(prices)
@@ -446,6 +464,11 @@ class MarketDataAggregator:
         
         # Calculate validation confidence
         confidence_score = self._calculate_validation_confidence(valid_data, outlier_providers)
+        previous_prices = {
+            name: data.previous_price for name, data in valid_data.items()
+            if data.previous_price is not None and math.isfinite(float(data.previous_price)) and data.previous_price > 0
+        }
+        previous_price = self._calculate_consensus_price(previous_prices) if previous_prices else None
         
         return PriceValidationResult(
             symbol=symbol,
@@ -456,9 +479,10 @@ class MarketDataAggregator:
             consensus_volume=consensus_volume,
             provider_prices=prices,
             outlier_providers=outlier_providers,
-            stale_providers=[],  # Would need timestamp comparison
+            stale_providers=stale_providers,
             validation_timestamp=datetime.now(timezone.utc),
-            confidence_score=confidence_score
+            confidence_score=confidence_score,
+            previous_price=previous_price
         )
     
     def _is_data_stale(self, data_point: MarketDataPoint) -> bool:
@@ -664,9 +688,21 @@ class MarketDataAggregator:
     
     def _get_api_key(self, provider_name: str) -> str:
         """Get API key for provider"""
-        # In production, this would read from environment variables or config file
         api_keys = {
-            'alphavantage': 'YOUR_ALPHA_VANTAGE_API_KEY',
-            'twelvedata': 'YOUR_TWELVE_DATA_API_KEY'
+            'alphavantage': 'ALPHA_VANTAGE_API_KEY',
+            'twelvedata': 'TWELVE_DATA_API_KEY'
         }
-        return api_keys.get(provider_name, '')
+        env_name = api_keys.get(provider_name)
+        return os.getenv(env_name, '') if env_name else ''
+
+    def get_provider_status(self) -> Dict[str, str]:
+        """Return configured/available status without contacting providers."""
+        status = {}
+        for name, provider in self.providers.items():
+            if requests is None:
+                status[name] = "unavailable: requests dependency missing"
+            elif provider.get('required_key') and not os.getenv(provider['required_key']):
+                status[name] = f"unavailable: missing {provider['required_key']}"
+            else:
+                status[name] = "configured"
+        return status

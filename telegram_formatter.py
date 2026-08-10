@@ -75,6 +75,8 @@ class TelegramFormatter:
     def format_signal_report(self, signal_result: SignalResult, 
                            format_type: str = ReportFormat.PROFESSIONAL.value) -> str:
         """Format a signal report for Telegram"""
+        if getattr(signal_result, "ai_decision_result", None) is not None:
+            return self._format_verified_intelligence_report(signal_result)
         report = TelegramReport(
             report_type="signal",
             format=format_type
@@ -93,6 +95,108 @@ class TelegramFormatter:
         ]
         
         return self._assemble_report(report)
+
+    def _format_verified_intelligence_report(self, signal_result: SignalResult) -> str:
+        """Format the production report from validated and computed values only."""
+        ai = signal_result.ai_decision_result
+        validation = signal_result.validation_result
+        technical = signal_result.technical_indicators
+        multi = signal_result.multi_timeframe
+        risk = signal_result.risk_metrics
+        portfolio = signal_result.portfolio_metrics or self.portfolio_manager.update_portfolio()
+        quality = signal_result.data_quality or {}
+        analysis = signal_result.market_analysis
+        asset_state = self.asset_manager.get_asset_state(signal_result.symbol)
+        open_count = len(asset_state.open_positions) if asset_state else 0
+        allocation = (
+            self.portfolio_manager.portfolio_config.base_position_size
+            if open_count == 0
+            else self.portfolio_manager.portfolio_config.scaling_position_size
+        )
+
+        source_count = len(validation.provider_prices) if validation else 0
+        source_total = 5
+        alignment_count = sum(
+            1 for item in (multi.timeframe_analyses.values() if multi else [])
+            if item.trend not in ("neutral", "unknown")
+        )
+
+        def value(obj, name, default="UNAVAILABLE"):
+            return getattr(obj, name, default) if obj is not None else default
+
+        lines = [
+            "AI TRADING INTELLIGENCE BOT",
+            "",
+            "SIGNAL",
+            f"Asset: {signal_result.symbol}",
+            f"Decision: {ai.decision}",
+            f"Confidence: {ai.confidence_score:.0%}",
+            f"Current Price: ${analysis.current_price:,.2f}",
+            f"Previous Price: ${analysis.previous_price:,.2f}",
+            f"Price Change: {analysis.price_change_percent:+.2f}%",
+            "",
+            "MARKET INTELLIGENCE",
+            f"Trend: {analysis.trend_direction}",
+            f"Momentum: {ai.momentum:.3f}",
+            f"Volatility: {analysis.volatility_score}",
+            f"Market Regime: {value(value(ai, 'market_regime'), 'regime').value if hasattr(value(value(ai, 'market_regime'), 'regime'), 'value') else value(value(ai, 'market_regime'), 'regime')}",
+            f"Data Sources: {source_count}/{source_total} available",
+            f"Price Confidence: {value(validation, 'confidence_score', 0):.0%}",
+            "",
+            "INDICATOR EVIDENCE",
+            f"RSI: {value(technical.rsi, 'rsi'):.2f}",
+            f"MACD: {value(technical.macd, 'macd'):.4f}",
+            f"EMA Structure: {value(technical.ema, 'trend')}",
+            f"Bollinger Bands %B: {value(technical.bollinger_bands, 'percent_b'):.4f}",
+            f"ATR: {value(technical.atr, 'atr'):.4f}",
+            f"ADX: {value(technical.adx, 'adx'):.2f}",
+            f"Stochastic: {value(technical.stochastic, 'k'):.2f}",
+            f"VWAP: {value(technical.vwap, 'vwap')}",
+            f"OBV: {value(technical.obv, 'obv')}",
+            f"Ichimoku: {value(technical.ichimoku, 'cloud_direction')}",
+            f"Fibonacci: {value(technical.fibonacci, 'nearest_level')}",
+            f"Pivot: {value(technical.pivot_points, 'pivot')}",
+            "",
+            "MULTI-TIMEFRAME",
+        ]
+        if multi:
+            for timeframe in ("5M", "15M", "1H", "4H", "Daily"):
+                item = multi.timeframe_analyses.get(timeframe)
+                lines.append(f"{timeframe}: {value(item, 'trend')} / momentum {value(item, 'momentum')}")
+            lines.append(f"Alignment: {alignment_count}/5 ({multi.trend_alignment})")
+        else:
+            lines.append("DATA UNAVAILABLE")
+
+        lines.extend([
+            "",
+            "TRADE PLAN",
+            f"Action: {ai.decision}",
+            f"Recommendation: {ai.recommended_action}",
+            f"Reference Entry: ${analysis.current_price:,.2f}",
+            f"Position Allocation: {allocation:.0%} of ${portfolio.total_balance:,.2f}",
+            f"Leverage: 1:{self.portfolio_manager.portfolio_config.leverage:g}",
+            f"Stop Loss: ${value(risk, 'stop_loss')}",
+            f"Take Profit: ${value(risk, 'take_profit_1')}",
+            f"Risk: {value(risk, 'drawdown_risk')} / R:R {value(risk, 'risk_reward_ratio')}",
+            "ILLUSTRATIVE PnL: UNAVAILABLE (no projected PnL calculation is implemented)",
+            "",
+            "CURRENT PORTFOLIO",
+            f"Balance: ${portfolio.total_balance:,.2f}",
+            f"Equity: ${portfolio.total_equity:,.2f}",
+            f"FLOATING PnL: ${portfolio.total_floating_pnl:+,.2f}",
+            f"REALIZED PnL: ${portfolio.total_realized_pnl:+,.2f}",
+            f"Open Positions: {portfolio.open_positions_count}",
+            f"Win Rate: {portfolio.win_rate:.2f}%",
+            f"Profit Factor: {portfolio.profit_factor:.2f}",
+            f"Max Drawdown: {portfolio.max_drawdown:.2f}%",
+            "",
+            "AI REASONING",
+            ai.ai_explanation or ai.confidence_explanation,
+            "",
+            f"Provider outliers: {', '.join(quality.get('outliers', [])) or 'none'}",
+            f"Stale providers: {', '.join(quality.get('stale', [])) or 'none'}",
+        ])
+        return "\n".join(lines)
     
     def format_portfolio_report(self, format_type: str = ReportFormat.PROFESSIONAL.value) -> str:
         """Format a portfolio report for Telegram"""
@@ -105,7 +209,7 @@ class TelegramFormatter:
         report.sections = [
             self._create_header_section(None),
             self._create_portfolio_summary_section(None),
-            self._create_asset_performance_sections(),
+            *self._create_asset_performance_sections(),
             self._create_system_status_section(None)
         ]
         
@@ -122,7 +226,7 @@ class TelegramFormatter:
         report.sections = [
             self._create_header_section(None),
             self._create_daily_performance_section(),
-            self._create_asset_performance_sections(),
+            *self._create_asset_performance_sections(),
             self._create_system_status_section(None)
         ]
         
