@@ -157,14 +157,20 @@ class ManualTechnicalIndicators:
     
     def __init__(self):
         self.indicators = TechnicalIndicators()
+
+    def _load_data(self):
+        self.indicators = TechnicalIndicators()
+        for i in range(200):
+            close = 50000.0 + i * 10
+            self.indicators.update_price_data(
+                "BTCUSD", close, 1000.0, close + 20.0, close - 20.0
+            )
     
     def test_rsi_calculation(self):
         """Test RSI calculation"""
         logger.info("Testing RSI calculation...")
         
-        # Add price data
-        for i in range(20):
-            self.indicators.update_price_data("BTCUSD", 50000.0 + i * 10, 1000.0)
+        self._load_data()
         
         # Calculate indicators
         result = self.indicators.calculate_all_indicators("BTCUSD")
@@ -181,9 +187,7 @@ class ManualTechnicalIndicators:
         """Test MACD calculation"""
         logger.info("Testing MACD calculation...")
         
-        # Add price data
-        for i in range(30):
-            self.indicators.update_price_data("BTCUSD", 50000.0 + i * 10, 1000.0)
+        self._load_data()
         
         # Calculate indicators
         result = self.indicators.calculate_all_indicators("BTCUSD")
@@ -200,9 +204,7 @@ class ManualTechnicalIndicators:
         """Test EMA calculation"""
         logger.info("Testing EMA calculation...")
         
-        # Add price data
-        for i in range(200):
-            self.indicators.update_price_data("BTCUSD", 50000.0 + i * 10, 1000.0)
+        self._load_data()
         
         # Calculate indicators
         result = self.indicators.calculate_all_indicators("BTCUSD")
@@ -220,9 +222,7 @@ class ManualTechnicalIndicators:
         """Test Bollinger Bands calculation"""
         logger.info("Testing Bollinger Bands calculation...")
         
-        # Add price data
-        for i in range(20):
-            self.indicators.update_price_data("BTCUSD", 50000.0 + i * 10, 1000.0)
+        self._load_data()
         
         # Calculate indicators
         result = self.indicators.calculate_all_indicators("BTCUSD")
@@ -267,10 +267,12 @@ class ManualMultiTimeframeAnalyzer:
     def test_trend_alignment(self):
         """Test trend alignment detection"""
         logger.info("Testing trend alignment...")
+        self.analyzer = MultiTimeframeAnalyzer()
         
         # Add bullish data for all timeframes
         for timeframe in ["5M", "15M", "1H", "4H", "Daily"]:
-            self.analyzer.update_timeframe_data("BTCUSD", timeframe, 50000.0 + 100, 1000.0)
+            self.analyzer.update_timeframe_data("BTCUSD", timeframe, 50000.0, 1000.0)
+            self.analyzer.update_timeframe_data("BTCUSD", timeframe, 50100.0, 1000.0)
         
         # Analyze multi-timeframe
         result = self.analyzer.analyze_multi_timeframe("BTCUSD")
@@ -347,38 +349,6 @@ class ManualAIDecisionEngine:
             confidence_score=0.85,
             key_levels={"average_price": 50000.0, "price_range": 1000.0, "price_volatility": 2.0},
             support_resistance={"support": [49500.0], "resistance": [50500.0]}
-        )
-        
-        # Create mock portfolio state
-        portfolio_state = PortfolioState(
-            total_balance=10000.0,
-            total_equity=10500.0,
-            floating_pnl=500.0,
-            realized_pnl=200.0,
-            net_pnl=700.0,
-            win_rate=60.0,
-            profit_factor=1.5,
-            max_drawdown=10.0,
-            open_positions_count=1,
-            daily_trades=5,
-            weekly_trades=25,
-            monthly_trades=100
-        )
-        
-        # Create mock market regime
-        market_regime = MarketRegime(
-            regime="Strong Bullish",
-            strength=0.8,
-            description="Strong bullish trend with high momentum"
-        )
-        
-        # Create mock risk metrics
-        risk_metrics = RiskMetrics(
-            volatility_score=0.5,
-            correlation_score=0.3,
-            drawdown_score=0.2,
-            exposure_score=0.4,
-            overall_risk_score=0.35
         )
         
         # Generate AI decision
@@ -576,12 +546,30 @@ class ManualIntegration:
         """Test complete workflow with all components"""
         logger.info("Testing complete workflow...")
         
-        # Step 1: Market data aggregation
-        price_validation = await self.market_data_aggregator.fetch_market_data("BTCUSD")
+        # Step 1: Market data aggregation.  Use the same deterministic provider
+        # fixtures as the provider tests so this manual harness never depends on
+        # external network access.
+        fixture = ManualMarketDataAggregator()
+        with patch.object(
+            self.market_data_aggregator,
+            "_fetch_from_provider",
+            side_effect=[
+                fixture._create_mock_binance_data(),
+                fixture._create_mock_coingecko_data(),
+                fixture._create_mock_alphavantage_data(),
+                fixture._create_mock_twelvedata_data(),
+                fixture._create_mock_yahoo_finance_data(),
+            ],
+        ):
+            price_validation = await self.market_data_aggregator.fetch_market_data("BTCUSD")
         assert price_validation.consensus_price > 0, "Should have valid consensus price"
         
         # Step 2: Technical indicators
-        self.technical_indicators.update_price_data("BTCUSD", price_validation.consensus_price, 1000.0)
+        for index in range(200):
+            close = price_validation.consensus_price * (0.98 + index * 0.0001)
+            self.technical_indicators.update_price_data(
+                "BTCUSD", close, 1000.0 + index, high=close * 1.002, low=close * 0.998
+            )
         technical_indicators = self.technical_indicators.calculate_all_indicators("BTCUSD")
         assert technical_indicators.overall_trend in ["bullish", "bearish", "neutral"], "Should have valid trend"
         

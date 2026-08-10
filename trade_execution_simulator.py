@@ -9,9 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 import uuid
+import logging
 
 from configuration_manager import PortfolioConfig, TradingConfig
 from asset_manager import AssetManager, Trade, TradeStatus, PositionDirection
+
+logger = logging.getLogger(__name__)
 
 class ExecutionMode(Enum):
     """Execution modes"""
@@ -120,7 +123,7 @@ class TradeExecutionSimulator:
             entry_price=entry_price,
             entry_time=datetime.now(timezone.utc),
             position_size=position_size,
-            leverage=self.trading_config.leverage,
+            leverage=self.portfolio_config.leverage,
             stop_loss_price=self._calculate_stop_loss(entry_price, direction, current_price),
             take_profit_price=self._calculate_take_profit(entry_price, direction, current_price),
             status=TradeStatus.OPEN.value
@@ -136,7 +139,7 @@ class TradeExecutionSimulator:
                 entry_price=entry_price,
                 exit_price=entry_price,  # Will be updated on exit
                 position_size=position_size,
-                leverage=self.trading_config.leverage,
+                leverage=self.portfolio_config.leverage,
                 entry_time=trade.entry_time,
                 exit_time=datetime.now(timezone.utc),
                 pnl=0.0,

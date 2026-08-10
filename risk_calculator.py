@@ -47,7 +47,8 @@ class RiskCalculator:
         self,
         symbol: str,
         market_analysis,
-        technical_indicators
+        technical_indicators,
+        direction: str = "BUY"
     ) -> RiskMetrics:
 
         logger.info(f"Calculating risk metrics for {symbol}")
@@ -80,19 +81,20 @@ class RiskCalculator:
 
         # ---------- Stop Loss ----------
 
-        stop_loss = current_price - (atr * 2)
+        is_sell = direction.upper() == "SELL"
+        stop_loss = current_price + (atr * 2) if is_sell else current_price - (atr * 2)
 
         # ---------- Take Profit ----------
 
-        tp1 = current_price + (atr * 2)
+        tp1 = current_price - (atr * 2) if is_sell else current_price + (atr * 2)
 
-        tp2 = current_price + (atr * 4)
+        tp2 = current_price - (atr * 4) if is_sell else current_price + (atr * 4)
 
-        tp3 = current_price + (atr * 6)
+        tp3 = current_price - (atr * 6) if is_sell else current_price + (atr * 6)
 
-        reward = tp3 - current_price
+        reward = abs(tp3 - current_price)
 
-        risk = current_price - stop_loss
+        risk = abs(current_price - stop_loss)
 
         rr = reward / risk if risk > 0 else 0
 

@@ -7,7 +7,7 @@ import asyncio
 import time
 import random
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 import logging
@@ -35,7 +35,7 @@ class RetryConfig:
     max_delay: float = 60.0
     backoff_multiplier: float = 2.0
     retry_strategy: RetryStrategy = RetryStrategy.EXPONENTIAL_BACKOFF
-    retry_on_errors: List[str] = None
+    retry_on_errors: List[str] = field(default_factory=lambda: ["unknown", "timeout", "connection_error", "rate_limit"])
 
 @dataclass
 class CacheEntry:
@@ -59,7 +59,7 @@ class RateLimitConfig:
 class FallbackConfig:
     """Fallback configuration"""
     enable_fallback: bool = True
-    fallback_providers: List[str] = None
+    fallback_providers: List[str] = field(default_factory=list)
     fallback_timeout: float = 5.0
     degrade_gracefully: bool = True
 
@@ -219,7 +219,8 @@ class ReliabilityManager:
             self._update_health_status(component, False, response_time)
             
             # Try fallback if available
-            if self.fallback_configs.get(component, {}).enable_fallback:
+            fallback_config = self.fallback_configs.get(component, FallbackConfig())
+            if fallback_config.enable_fallback and fallback_config.fallback_providers:
                 try:
                     result = await self._execute_with_fallback(component, func, *args, **kwargs)
                     return result
@@ -241,7 +242,7 @@ class ReliabilityManager:
                 
                 # Check if error should trigger retry
                 error_type = self._categorize_error(e)
-                if error_type not in retry_config.retry_on_errors:
+                if error_type not in (retry_config.retry_on_errors or []):
                     raise e
                 
                 # Calculate delay
@@ -255,7 +256,7 @@ class ReliabilityManager:
         fallback_config = self.fallback_configs.get(component, FallbackConfig())
         
         # Try fallback providers
-        for fallback_provider in fallback_config.fallback_providers:
+        for fallback_provider in (fallback_config.fallback_providers or []):
             try:
                 # Modify function to use fallback provider
                 modified_func = self._create_fallback_function(func, fallback_provider)

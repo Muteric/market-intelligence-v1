@@ -18,6 +18,7 @@ except ImportError:  # Optional at import time; requirements installs it in CI.
 import random
 import os
 import math
+from urllib.parse import quote
 
 from configuration_manager import AssetConfig
 
@@ -37,6 +38,7 @@ class MarketDataPoint:
     source: str
     status: str = "valid"
     previous_price: Optional[float] = None
+    ohlcv: Optional[List[Dict[str, float]]] = None
     
 @dataclass
 class PriceValidationResult:
@@ -53,6 +55,8 @@ class PriceValidationResult:
     validation_timestamp: datetime
     confidence_score: float
     previous_price: Optional[float] = None
+    ohlcv: Optional[List[Dict[str, float]]] = None
+    ohlcv_provider: Optional[str] = None
 
 class MarketDataAggregator:
     """Multi-source market data aggregation with price validation"""
@@ -76,6 +80,7 @@ class MarketDataAggregator:
             'endpoints': {
                 'ticker': '/ticker/24hr',
                 'price': '/ticker/price'
+                , 'klines': '/klines'
             },
             'priority': 1,
             'weight': 1.0
@@ -225,6 +230,7 @@ class MarketDataAggregator:
         bid = float(data['bidPrice'])
         ask = float(data['askPrice'])
         volume = float(data['volume'])
+        ohlcv = self._fetch_binance_ohlcv(provider, binance_symbol)
         
         # Calculate spread
         spread = ask - bid
@@ -239,8 +245,29 @@ class MarketDataAggregator:
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
             source='binance',
-            previous_price=previous_price
+            previous_price=previous_price,
+            ohlcv=ohlcv,
         )
+
+    def _fetch_binance_ohlcv(self, provider: Dict, symbol: str) -> Optional[List[Dict[str, float]]]:
+        """Fetch observed five-minute candles when the symbol is supported."""
+        response = requests.get(
+            f"{provider['base_url']}{provider['endpoints']['klines']}",
+            params={"symbol": symbol, "interval": "5m", "limit": 1000},
+            timeout=10,
+        )
+        response.raise_for_status()
+        candles = []
+        for row in response.json():
+            candles.append({
+                "timestamp": datetime.fromtimestamp(float(row[0]) / 1000, timezone.utc),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+            })
+        return candles or None
     
     async def _fetch_coingecko(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from CoinGecko API"""
@@ -398,6 +425,7 @@ class MarketDataAggregator:
         bid = quote.get('bid', price * 0.999) if quote.get('bid') else price * 0.999
         ask = quote.get('ask', price * 1.001) if quote.get('ask') else price * 1.001
         volume = quote.get('regularMarketVolume', 0)
+        ohlcv = self._fetch_yahoo_ohlcv(provider, yahoo_symbol, headers)
         
         spread = ask - bid
         
@@ -411,8 +439,38 @@ class MarketDataAggregator:
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
             source='yahoo_finance',
-            previous_price=quote.get('regularMarketPreviousClose')
+            previous_price=quote.get('regularMarketPreviousClose'),
+            ohlcv=ohlcv,
         )
+
+    def _fetch_yahoo_ohlcv(self, provider: Dict, symbol: str, headers: Dict) -> Optional[List[Dict[str, float]]]:
+        """Fetch observed Yahoo candles; missing history is not synthesized."""
+        url = f"{provider['base_url']}{provider['endpoints']['chart']}/{quote(symbol)}"
+        response = requests.get(
+            url,
+            params={"range": "5d", "interval": "5m", "events": "history"},
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json().get("chart", {}).get("result", [])
+        if not result:
+            return None
+        chart = result[0]
+        timestamps = chart.get("timestamp", [])
+        quote_data = (chart.get("indicators", {}).get("quote", [{}]) or [{}])[0]
+        candles = []
+        for index, timestamp in enumerate(timestamps):
+            values = {
+                key: (quote_data.get(key) or [None] * len(timestamps))[index]
+                for key in ("open", "high", "low", "close", "volume")
+            }
+            if all(values[key] is not None for key in ("open", "high", "low", "close")):
+                candles.append({
+                    "timestamp": datetime.fromtimestamp(float(timestamp), timezone.utc),
+                    **{key: float(value) for key, value in values.items() if value is not None},
+                })
+        return candles or None
     
     def _validate_and_consensus(self, symbol: str, provider_data: Dict[str, MarketDataPoint]) -> PriceValidationResult:
         """Validate data and calculate consensus price"""
@@ -425,6 +483,7 @@ class MarketDataAggregator:
         prices = {}
         valid_data = {}
         stale_providers = []
+        outlier_providers = []
         
         for provider_name, data_point in provider_data.items():
             # Check if data is stale (older than 1 minute)
@@ -440,6 +499,7 @@ class MarketDataAggregator:
             # Check for outliers
             if self._is_outlier(data_point, prices):
                 logger.warning(f"Data from {provider_name} for {symbol} is an outlier")
+                outlier_providers.append(provider_name)
                 continue
             
             prices[provider_name] = data_point.price
@@ -459,9 +519,6 @@ class MarketDataAggregator:
         # Calculate consensus volume (weighted average)
         consensus_volume = self._calculate_consensus_volume(valid_data)
         
-        # Identify outlier and stale providers
-        outlier_providers = list(set(provider_data.keys()) - set(valid_data.keys()))
-        
         # Calculate validation confidence
         confidence_score = self._calculate_validation_confidence(valid_data, outlier_providers)
         previous_prices = {
@@ -470,6 +527,12 @@ class MarketDataAggregator:
         }
         previous_price = self._calculate_consensus_price(previous_prices) if previous_prices else None
         
+        ohlcv_provider = next(
+            (name for name, point in valid_data.items() if point.ohlcv),
+            None,
+        )
+        ohlcv = valid_data[ohlcv_provider].ohlcv if ohlcv_provider else None
+
         return PriceValidationResult(
             symbol=symbol,
             consensus_price=consensus_price,
@@ -482,7 +545,9 @@ class MarketDataAggregator:
             stale_providers=stale_providers,
             validation_timestamp=datetime.now(timezone.utc),
             confidence_score=confidence_score,
-            previous_price=previous_price
+            previous_price=previous_price,
+            ohlcv=ohlcv,
+            ohlcv_provider=ohlcv_provider,
         )
     
     def _is_data_stale(self, data_point: MarketDataPoint) -> bool:

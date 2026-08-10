@@ -98,6 +98,10 @@ class PortfolioManager:
         # Calculate aggregate metrics
         total_balance = sum(asset.balance for asset in all_assets.values())
         total_equity = sum(asset.equity for asset in all_assets.values())
+        total_initial_balance = sum(
+            getattr(asset, "starting_balance", asset.balance)
+            for asset in all_assets.values()
+        )
         
         # Calculate PnL
         total_floating_pnl = sum(
@@ -148,7 +152,7 @@ class PortfolioManager:
         
         # Calculate exposure
         total_position_value = sum(
-            sum(trade.position_size for trade in asset.open_positions)
+            sum((trade.position_size or 0.0) for trade in asset.open_positions)
             for asset in all_assets.values()
         )
         current_exposure = (total_position_value / total_balance * 100) if total_balance > 0 else 0.0
@@ -165,7 +169,7 @@ class PortfolioManager:
         recovery_factor = self._calculate_recovery_factor(total_realized_pnl, max_drawdown)
         
         # Calculate ROI
-        net_roi = (net_pnl / total_balance * 100) if total_balance > 0 else 0.0
+        net_roi = (net_pnl / total_initial_balance * 100) if total_initial_balance > 0 else 0.0
         
         # Calculate period profits
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')

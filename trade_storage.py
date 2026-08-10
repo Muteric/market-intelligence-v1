@@ -36,6 +36,8 @@ class TradeRecord:
     exit_price: float = None
     exit_time: datetime = None
     position_size: float = None
+    capital_used: float = None
+    notional_value: float = None
     leverage: float = None
     floating_pnl: float = 0.0
     realized_pnl: float = 0.0
@@ -108,6 +110,7 @@ class TradeStorage:
         
         # Create tables
         self._create_tables()
+        self._migrate_trade_schema()
     
     def _initialize_json(self) -> None:
         """Initialize JSON storage"""
@@ -131,8 +134,10 @@ class TradeStorage:
                 entry_time TEXT NOT NULL,
                 exit_price REAL,
                 exit_time TEXT,
-                position_size REAL NOT NULL,
-                leverage REAL NOT NULL,
+                position_size REAL,
+                capital_used REAL,
+                notional_value REAL,
+                leverage REAL,
                 floating_pnl REAL DEFAULT 0.0,
                 realized_pnl REAL DEFAULT 0.0,
                 trade_duration INTEGER DEFAULT 0,
@@ -195,6 +200,66 @@ class TradeStorage:
         ''')
         
         self.conn.commit()
+
+    def _migrate_trade_schema(self) -> None:
+        """Migrate older trade tables to the nullable, symmetric schema."""
+        cursor = self.conn.cursor()
+        table_info = list(cursor.execute("PRAGMA table_info(trades)"))
+        columns = {row[1] for row in table_info}
+        not_null = {row[1] for row in table_info if row[3]}
+        if {"position_size", "leverage"} & not_null:
+            cursor.execute("ALTER TABLE trades RENAME TO trades_legacy")
+            cursor.execute('''
+                CREATE TABLE trades (
+                    id TEXT PRIMARY KEY,
+                    asset TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    entry_price REAL NOT NULL,
+                    entry_time TEXT NOT NULL,
+                    exit_price REAL,
+                    exit_time TEXT,
+                    position_size REAL,
+                    capital_used REAL,
+                    notional_value REAL,
+                    leverage REAL,
+                    floating_pnl REAL DEFAULT 0.0,
+                    realized_pnl REAL DEFAULT 0.0,
+                    trade_duration INTEGER DEFAULT 0,
+                    roi REAL DEFAULT 0.0,
+                    status TEXT NOT NULL,
+                    stop_loss_price REAL,
+                    take_profit_price REAL,
+                    close_reason TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                INSERT INTO trades (
+                    id, asset, direction, entry_price, entry_time, exit_price,
+                    exit_time, position_size, leverage, floating_pnl,
+                    realized_pnl, trade_duration, roi, status, stop_loss_price,
+                    take_profit_price, close_reason, created_at, updated_at
+                )
+                SELECT id, asset, direction, entry_price, entry_time, exit_price,
+                    exit_time, position_size, leverage, floating_pnl,
+                    realized_pnl, trade_duration, roi, status, stop_loss_price,
+                    take_profit_price, close_reason, created_at, updated_at
+                FROM trades_legacy
+            ''')
+            cursor.execute("DROP TABLE trades_legacy")
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(trades)")}
+        for name in ("capital_used", "notional_value"):
+            if name not in columns:
+                cursor.execute(f"ALTER TABLE trades ADD COLUMN {name} REAL")
+        self.conn.commit()
+
+    def close(self) -> None:
+        """Close the SQLite connection when this storage instance is no longer used."""
+        connection = getattr(self, "conn", None)
+        if connection is not None:
+            connection.close()
+            self.conn = None
     
     def save_trade(self, trade: Trade) -> bool:
         """Save a trade to storage"""
@@ -358,13 +423,14 @@ class TradeStorage:
         cursor.execute('''
             INSERT OR REPLACE INTO trades 
             (id, asset, direction, entry_price, entry_time, exit_price, exit_time,
-             position_size, leverage, floating_pnl, realized_pnl, trade_duration,
+             position_size, capital_used, notional_value, leverage, floating_pnl, realized_pnl, trade_duration,
              roi, status, stop_loss_price, take_profit_price, close_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             trade_dict['id'], trade_dict['asset'], trade_dict['direction'],
             trade_dict['entry_price'], trade_dict['entry_time'], trade_dict['exit_price'],
-            trade_dict['exit_time'], trade_dict['position_size'], trade_dict['leverage'],
+            trade_dict['exit_time'], trade_dict['position_size'], trade_dict.get('capital_used'),
+            trade_dict.get('notional_value'), trade_dict['leverage'],
             trade_dict['floating_pnl'], trade_dict['realized_pnl'], trade_dict['trade_duration'],
             trade_dict['roi'], trade_dict['status'], trade_dict['stop_loss_price'],
             trade_dict['take_profit_price'], trade_dict['close_reason']
@@ -392,8 +458,14 @@ class TradeStorage:
             with open(filepath, 'r', encoding='utf-8') as f:
                 trades = json.load(f)
         
-        # Add new trade
-        trades.append(trade_dict)
+        # Upsert by UUID so closing or updating a trade cannot create a second
+        # persistent record for the same lifecycle.
+        for index, existing_trade in enumerate(trades):
+            if existing_trade.get('id') == trade_dict.get('id'):
+                trades[index] = trade_dict
+                break
+        else:
+            trades.append(trade_dict)
         
         # Save back to file
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -535,7 +607,7 @@ class TradeStorage:
         """Get trades from JSON files"""
         trades = []
         
-        for filepath in self.json_dir.glob("*.json"):
+        for filepath in self.json_dir.glob("trades_*.json"):
             if symbol and symbol.lower() not in filepath.name:
                 continue
             
@@ -629,6 +701,8 @@ class TradeStorage:
     def _trade_from_row(self, row: sqlite3.Row) -> Trade:
         """Convert SQLite row to Trade object"""
         trade_dict = dict(row)
+        trade_dict.pop('created_at', None)
+        trade_dict.pop('updated_at', None)
         
         # Convert strings to appropriate types
         trade_dict['entry_price'] = float(trade_dict['entry_price'])
@@ -636,6 +710,14 @@ class TradeStorage:
         trade_dict['position_size'] = (
             float(trade_dict['position_size'])
             if trade_dict.get('position_size') is not None else None
+        )
+        trade_dict['capital_used'] = (
+            float(trade_dict['capital_used'])
+            if trade_dict.get('capital_used') is not None else None
+        )
+        trade_dict['notional_value'] = (
+            float(trade_dict['notional_value'])
+            if trade_dict.get('notional_value') is not None else None
         )
         trade_dict['leverage'] = (
             float(trade_dict['leverage'])
@@ -663,6 +745,14 @@ class TradeStorage:
         trade_dict['position_size'] = (
             float(trade_dict['position_size'])
             if trade_dict.get('position_size') is not None else None
+        )
+        trade_dict['capital_used'] = (
+            float(trade_dict['capital_used'])
+            if trade_dict.get('capital_used') is not None else None
+        )
+        trade_dict['notional_value'] = (
+            float(trade_dict['notional_value'])
+            if trade_dict.get('notional_value') is not None else None
         )
         trade_dict['leverage'] = (
             float(trade_dict['leverage'])

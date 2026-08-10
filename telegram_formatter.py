@@ -4,7 +4,7 @@ Generates professional-grade Telegram reports for trading signals and portfolio 
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
@@ -70,12 +70,14 @@ class TelegramFormatter:
         self.asset_manager = asset_manager
         self.portfolio_manager = portfolio_manager
         self.system_config = system_config
+        self.market_snapshots: Dict[str, Dict[str, Any]] = {}
         self.report_templates = self._load_report_templates()
     
     def format_signal_report(self, signal_result: SignalResult, 
                            format_type: str = ReportFormat.PROFESSIONAL.value) -> str:
         """Format a signal report for Telegram"""
-        if getattr(signal_result, "ai_decision_result", None) is not None:
+        ai_decision_result = getattr(signal_result, "ai_decision_result", None)
+        if is_dataclass(ai_decision_result):
             return self._format_verified_intelligence_report(signal_result)
         report = TelegramReport(
             report_type="signal",
@@ -106,6 +108,11 @@ class TelegramFormatter:
         portfolio = signal_result.portfolio_metrics or self.portfolio_manager.update_portfolio()
         quality = signal_result.data_quality or {}
         analysis = signal_result.market_analysis
+        self.market_snapshots[signal_result.symbol] = {
+            "price": analysis.current_price,
+            "timestamp": analysis.timestamp,
+            "status": "validated",
+        }
         asset_state = self.asset_manager.get_asset_state(signal_result.symbol)
         open_count = len(asset_state.open_positions) if asset_state else 0
         allocation = (
@@ -115,11 +122,11 @@ class TelegramFormatter:
         )
 
         source_count = len(validation.provider_prices) if validation else 0
-        source_total = 5
-        alignment_count = sum(
-            1 for item in (multi.timeframe_analyses.values() if multi else [])
-            if item.trend not in ("neutral", "unknown")
-        )
+        source_total = quality.get("provider_total", source_count)
+        timeframe_items = list(multi.timeframe_analyses.values()) if multi else []
+        bullish_count = sum(item.trend.startswith("bullish") for item in timeframe_items)
+        bearish_count = sum(item.trend.startswith("bearish") for item in timeframe_items)
+        alignment_count = max(bullish_count, bearish_count)
 
         def value(obj, name, default="UNAVAILABLE"):
             return getattr(obj, name, default) if obj is not None else default
@@ -173,11 +180,12 @@ class TelegramFormatter:
             f"Action: {ai.decision}",
             f"Recommendation: {ai.recommended_action}",
             f"Reference Entry: ${analysis.current_price:,.2f}",
-            f"Position Allocation: {allocation:.0%} of ${portfolio.total_balance:,.2f}",
+            f"Position Allocation: {allocation:.0%} of ${asset_state.balance if asset_state else 0.0:,.2f}",
             f"Leverage: 1:{self.portfolio_manager.portfolio_config.leverage:g}",
-            f"Stop Loss: ${value(risk, 'stop_loss')}",
-            f"Take Profit: ${value(risk, 'take_profit_1')}",
+            f"Stop Loss: ${value(risk, 'stop_loss') if ai.decision != 'HOLD' else 'UNAVAILABLE'}",
+            f"Take Profit: ${value(risk, 'take_profit_1') if ai.decision != 'HOLD' else 'UNAVAILABLE'}",
             f"Risk: {value(risk, 'drawdown_risk')} / R:R {value(risk, 'risk_reward_ratio')}",
+            "Action Detail: No position change" if ai.decision == "HOLD" else "Action Detail: Simulated position decision",
             "ILLUSTRATIVE PnL: UNAVAILABLE (no projected PnL calculation is implemented)",
             "",
             "CURRENT PORTFOLIO",
@@ -243,7 +251,7 @@ class TelegramFormatter:
             timestamp = datetime.now(timezone.utc)
             symbol = "PORTFOLIO"
             decision = "UPDATE"
-            confidence = 100.0
+            confidence = None
         
         header = f"🧠 AI TRADING INTELLIGENCE BOT\n\n"
         header += f"═══════════════════════════════\n\n"
@@ -253,7 +261,7 @@ class TelegramFormatter:
         header += f"🟢 {symbol}\n"
         header += f"SIGNAL\n"
         header += f"{decision}\n"
-        header += f"Confidence: {confidence:.0}%\n\n"
+        header += f"Confidence: {confidence:.0}%\n\n" if confidence is not None else "Confidence: N/A\n\n"
         
         return ReportSectionData(
             section=ReportSection.HEADER.value,
@@ -308,9 +316,11 @@ class TelegramFormatter:
         section = f"💼 POSITION MANAGEMENT\n\n"
         section += f"Previous Signal: {signal_result.action_taken}\n"
         section += f"Action Taken: {signal_result.action_taken}\n"
-        section += f"Open Positions: {len(asset_state.open_positions)} / 3\n"
-        section += f"Capital Used: ${signal_result.positions_opened * 50:.2f}\n"
-        section += f"Position Size: ${signal_result.positions_opened * 10000:.2f}\n\n"
+        section += f"Open Positions: {len(asset_state.open_positions)} / {self.portfolio_manager.portfolio_config.max_positions}\n"
+        capital_used = sum((trade.capital_used or trade.position_size or 0.0) for trade in asset_state.open_positions)
+        notional_value = sum((trade.notional_value or 0.0) for trade in asset_state.open_positions)
+        section += f"Capital Used: ${capital_used:.2f}\n"
+        section += f"Notional Exposure: ${notional_value:.2f}\n\n"
         
         return ReportSectionData(
             section=ReportSection.POSITION_MANAGEMENT.value,
@@ -322,12 +332,16 @@ class TelegramFormatter:
     def _create_trade_performance_section(self, signal_result: SignalResult) -> ReportSectionData:
         """Create trade performance section"""
         portfolio_metrics = self.portfolio_manager.update_portfolio()
+
+        def metric(name: str) -> float:
+            value = getattr(portfolio_metrics, name, 0.0)
+            return value if isinstance(value, (int, float)) else 0.0
         
         section = f"💰 TRADE PERFORMANCE\n\n"
-        section += f"Floating Profit: +${portfolio_metrics.total_floating_pnl:.2f}\n"
-        section += f"Realized Profit Today: +${portfolio_metrics.daily_profit:.2f}\n"
-        section += f"Portfolio Profit: +${portfolio_metrics.net_pnl:.2f}\n"
-        section += f"ROI: {portfolio_metrics.net_roi:.2f}%\n\n"
+        section += f"Floating Profit: +${metric('total_floating_pnl'):.2f}\n"
+        section += f"Realized Profit Today: +${metric('daily_profit'):.2f}\n"
+        section += f"Portfolio Profit: +${metric('net_pnl'):.2f}\n"
+        section += f"ROI: {metric('net_roi'):.2f}%\n\n"
         
         return ReportSectionData(
             section=ReportSection.TRADE_PERFORMANCE.value,
@@ -373,7 +387,17 @@ class TelegramFormatter:
         section += f"• Momentum increasing.\n"
         section += f"• Market favors long positions.\n\n"
         
-        section += f"Recommendation: Continue holding {signal_result.decision} positions.\n\n"
+        section = "AI ANALYSIS\n\n"
+        momentum = getattr(signal_result.market_analysis, "momentum_score", "UNAVAILABLE")
+        volatility = getattr(signal_result.market_analysis, "volatility_score", "UNAVAILABLE")
+        section += f"Trend: {signal_result.market_analysis.trend_direction}\n"
+        section += f"Momentum score: {momentum}\n"
+        section += f"Volatility: {volatility}\n\n"
+        section += f"Recommendation: {signal_result.decision}\n"
+        reasoning = signal_result.reasoning
+        if not isinstance(reasoning, (list, tuple)):
+            reasoning = ["No reasoning available"]
+        section += "Reasoning: " + "; ".join(str(item) for item in reasoning) + "\n\n"
         
         return ReportSectionData(
             section=ReportSection.AI_ANALYSIS.value,
@@ -386,20 +410,24 @@ class TelegramFormatter:
         """Create portfolio summary section"""
         portfolio_metrics = self.portfolio_manager.update_portfolio()
         all_assets = self.asset_manager.get_all_assets()
+
+        def metric(name: str) -> float:
+            value = getattr(portfolio_metrics, name, 0.0)
+            return value if isinstance(value, (int, float)) else 0.0
         
         section = f"📈 PORTFOLIO SUMMARY\n\n"
-        section += f"Account Balance: ${portfolio_metrics.balance:.2f}\n"
-        section += f"Equity: ${portfolio_metrics.current_equity:.2f}\n"
-        section += f"Open Exposure: {portfolio_metrics.current_exposure:.1f}%\n"
-        section += f"Floating Profit: +${portfolio_metrics.total_floating_pnl:.2f}\n"
-        section += f"Today's Realized Profit: +${portfolio_metrics.daily_profit:.2f}\n"
-        section += f"Total Profit: +${portfolio_metrics.net_pnl:.2f}\n"
-        section += f"Win Rate: {portfolio_metrics.win_rate:.1f}%\n"
-        section += f"Trades Closed: {portfolio_metrics.total_closed_trades}\n"
-        section += f"Winning Trades: {portfolio_metrics.winning_trades}\n"
-        section += f"Losing Trades: {portfolio_metrics.losing_trades}\n"
-        section += f"Profit Factor: {portfolio_metrics.profit_factor:.2f}\n"
-        section += f"Maximum Drawdown: {portfolio_metrics.max_drawdown:.2f}%\n\n"
+        section += f"Account Balance: ${metric('balance'):.2f}\n"
+        section += f"Equity: ${metric('current_equity'):.2f}\n"
+        section += f"Open Exposure: {metric('current_exposure'):.1f}%\n"
+        section += f"Floating Profit: +${metric('total_floating_pnl'):.2f}\n"
+        section += f"Today's Realized Profit: +${metric('daily_profit'):.2f}\n"
+        section += f"Total Profit: +${metric('net_pnl'):.2f}\n"
+        section += f"Win Rate: {metric('win_rate'):.1f}%\n"
+        section += f"Trades Closed: {metric('total_closed_trades'):.0f}\n"
+        section += f"Winning Trades: {metric('winning_trades'):.0f}\n"
+        section += f"Losing Trades: {metric('losing_trades'):.0f}\n"
+        section += f"Profit Factor: {metric('profit_factor'):.2f}\n"
+        section += f"Maximum Drawdown: {metric('max_drawdown'):.2f}%\n\n"
         
         # Add asset-specific summaries if signal_result is provided
         if signal_result:
@@ -446,7 +474,11 @@ class TelegramFormatter:
     def _create_single_asset_section(self, symbol: str, asset_state) -> ReportSectionData:
         """Create a single asset performance section"""
         section = f"🟢 {symbol}\n\n"
-        section += f"Current Price: ${asset_state.equity:,.2f}\n"
+        snapshot = self.market_snapshots.get(symbol)
+        if snapshot and snapshot.get("price") is not None:
+            section += f"Current Price: ${snapshot['price']:,.2f}\n"
+        else:
+            section += "Current Price: DATA UNAVAILABLE\n"
         section += f"Open Positions: {len(asset_state.open_positions)}\n"
         section += f"Floating Profit: +${sum(t.floating_pnl for t in asset_state.open_positions):.2f}\n"
         section += f"Win Rate: {asset_state.performance_stats.get('win_rate', 0):.1f}%\n"

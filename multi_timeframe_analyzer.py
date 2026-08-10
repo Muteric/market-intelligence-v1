@@ -81,6 +81,41 @@ class MultiTimeframeAnalyzer:
         for key in [self.timeframe_data, self.timeframe_volumes, self.timeframe_highs, self.timeframe_lows]:
             if len(key[symbol][timeframe]) > max_points:
                 key[symbol][timeframe] = key[symbol][timeframe][-max_points:]
+
+    def set_timeframe_ohlcv(self, symbol: str, timeframe: str,
+                            candles: List[Dict[str, float]]) -> None:
+        """Set a timeframe from observed five-minute candles without inventing bars."""
+        factors = {"5M": 1, "15M": 3, "1H": 12, "4H": 48, "Daily": 288}
+        factor = factors.get(timeframe)
+        if factor is None:
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
+
+        bars = []
+        for index in range(0, len(candles) - factor + 1, factor):
+            group = candles[index:index + factor]
+            if len(group) != factor:
+                continue
+            bars.append({
+                "close": float(group[-1]["close"]),
+                "volume": sum(float(item.get("volume", 0.0)) for item in group),
+                "high": max(float(item["high"]) for item in group),
+                "low": min(float(item["low"]) for item in group),
+            })
+        if not bars:
+            return
+
+        self.timeframe_data.setdefault(symbol, {})[timeframe] = [
+            bar["close"] for bar in bars[-100:]
+        ]
+        self.timeframe_volumes.setdefault(symbol, {})[timeframe] = [
+            bar["volume"] for bar in bars[-100:]
+        ]
+        self.timeframe_highs.setdefault(symbol, {})[timeframe] = [
+            bar["high"] for bar in bars[-100:]
+        ]
+        self.timeframe_lows.setdefault(symbol, {})[timeframe] = [
+            bar["low"] for bar in bars[-100:]
+        ]
     
     def analyze_multi_timeframe(self, symbol: str) -> MultiTimeframeResult:
         """Analyze multiple timeframes for a symbol"""

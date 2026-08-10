@@ -36,13 +36,19 @@ jobs:
       - name: Validate imports
         run: python import_validation.py
 
+      - name: Compile Python sources
+        run: python -m compileall .
+
       - name: Validate Telegram configuration
         run: |
           test -n "$TELEGRAM_TOKEN"
           test -n "$TELEGRAM_CHAT_ID"
 
       - name: Run tests
-        run: python -m pytest
+        run: python -m pytest -q
+
+      - name: Run deterministic integration harness
+        run: python test_system.py
 
       - name: Run market intelligence
         run: python main.py

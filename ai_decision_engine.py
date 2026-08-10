@@ -28,14 +28,9 @@ from market_regime_detector import (
 )
 from multi_timeframe_analyzer import MultiTimeframeResult
 from asset_manager import AssetManager, Trade, PositionDirection, TradeStatus
+from signal_engine import SignalDecision
 
 logger = logging.getLogger(__name__)
-
-class SignalDecision(Enum):
-    """Trading signal decisions"""
-    BUY = "BUY"
-    SELL = "SELL"
-    HOLD = "HOLD"
 
 # Compatibility aliases keep existing imports working without defining duplicate models.
 MarketRegime = MarketRegimeResult
@@ -78,9 +73,12 @@ class AIDecisionEngine:
                  performance_tracker: PerformanceTracker = None):
         self.asset_manager = asset_manager
         self.trading_config = trading_config
-        self.market_regime_detector = MarketRegimeDetector()
-        self.risk_calculator = RiskCalculator()
         self.portfolio_config = portfolio_config or PortfolioConfig()
+        self.market_regime_detector = MarketRegimeDetector()
+        self.risk_calculator = RiskCalculator(
+            account_balance=self.portfolio_config.initial_balance,
+            leverage=self.portfolio_config.leverage,
+        )
         self.portfolio_manager = PortfolioManager(
             asset_manager, self.portfolio_config, trading_config
         )
@@ -91,7 +89,8 @@ class AIDecisionEngine:
     def generate_decision(self, symbol: str, market_analysis: MarketAnalysis, 
                          technical_indicators: TechnicalIndicatorsResult,
                          multi_timeframe: MultiTimeframeResult,
-                         current_price: float, previous_price: float) -> AIDecisionResult:
+                         current_price: float, previous_price: float,
+                         data_confidence: float = 1.0) -> AIDecisionResult:
         """Generate comprehensive AI trading decision"""
         logger.info(f"Generating AI decision for {symbol}")
         
@@ -102,7 +101,14 @@ class AIDecisionEngine:
         market_regime = self.market_regime_detector.detect_regime(symbol, market_analysis, technical_indicators)
         
         # Calculate risk metrics
-        risk_metrics = self.risk_calculator.calculate_risk_metrics(symbol, market_analysis, technical_indicators)
+        asset_state = self.asset_manager.get_asset_state(symbol)
+        self.risk_calculator.account_balance = (
+            asset_state.balance if asset_state else self.portfolio_config.initial_balance
+        )
+        risk_metrics = self.risk_calculator.calculate_risk_metrics(
+            symbol, market_analysis, technical_indicators,
+            direction=market_analysis.trend_direction,
+        )
         
         # Synthesize market data
         consensus_market_price = self._calculate_consensus_price(symbol, current_price, previous_price)
@@ -118,12 +124,15 @@ class AIDecisionEngine:
             symbol, market_analysis, technical_indicators, multi_timeframe,
            metrics , market_regime, risk_metrics
         )
+        if data_confidence < 0.4:
+            decision = SignalDecision.HOLD.value
         
         # Calculate confidence scores
         confidence_score = self._calculate_confidence_score(
             symbol, market_analysis, technical_indicators, multi_timeframe,
             metrics, market_regime, risk_metrics, decision
         )
+        confidence_score = min(confidence_score, max(0.0, min(1.0, data_confidence)))
         
         confidence_explanation = self._generate_confidence_explanation(
             symbol, market_analysis, technical_indicators, multi_timeframe,

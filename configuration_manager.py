@@ -6,7 +6,7 @@ Handles all configurable settings including portfolio parameters, trading rules,
 import json
 import os
 from dataclasses import dataclass, asdict
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 
 
@@ -41,6 +41,7 @@ class AssetConfig:
     min_confidence: float = 0.5
     max_volatility: str = "high"  # low, medium, high
     analysis_interval_minutes: int = 15
+    allocation_percentage: Optional[float] = None
 
 @dataclass
 class TradingConfig:
@@ -107,14 +108,16 @@ class ConfigurationManager:
                 enabled=True,
                 min_confidence=0.5,
                 max_volatility="high",
-                analysis_interval_minutes=15
+                analysis_interval_minutes=15,
+                allocation_percentage=0.5,
             ),
             "XAUUSD": AssetConfig(
                 symbol="XAUUSD",
                 enabled=True,
                 min_confidence=0.5,
                 max_volatility="high",
-                analysis_interval_minutes=15
+                analysis_interval_minutes=15,
+                allocation_percentage=0.5,
             )
         }
         
@@ -145,13 +148,23 @@ class ConfigurationManager:
         
         assets_data = data.get('assets', {})
         assets = {}
+        enabled_asset_count = sum(
+            1 for asset_data in assets_data.values()
+            if asset_data.get('enabled', True)
+        )
+        equal_allocation = 1.0 / enabled_asset_count if enabled_asset_count else 0.0
         for symbol, asset_data in assets_data.items():
             assets[symbol] = AssetConfig(
                 symbol=symbol,
                 enabled=asset_data.get('enabled', True),
                 min_confidence=float(asset_data.get('min_confidence', 0.5)),
                 max_volatility=asset_data.get('max_volatility', 'high'),
-                analysis_interval_minutes=int(asset_data.get('analysis_interval_minutes', 15))
+                analysis_interval_minutes=int(asset_data.get('analysis_interval_minutes', 15)),
+                allocation_percentage=(
+                    float(asset_data['allocation_percentage'])
+                    if asset_data.get('allocation_percentage') is not None
+                    else (equal_allocation if asset_data.get('enabled', True) else 0.0)
+                )
             )
         
         trading_data = data.get('trading', {})
@@ -278,6 +291,16 @@ class ConfigurationManager:
                 errors.append(f"{symbol}: max_volatility must be 'low', 'medium', or 'high'")
             if asset.analysis_interval_minutes <= 0:
                 errors.append(f"{symbol}: analysis_interval_minutes must be positive")
+
+        enabled_assets = [asset for asset in self._config.assets.values() if asset.enabled]
+        allocation_total = sum(asset.allocation_percentage or 0.0 for asset in enabled_assets)
+        if enabled_assets and abs(allocation_total - 1.0) > 1e-6:
+            errors.append(
+                f"Enabled asset allocation percentages must total 1.0; got {allocation_total:.6f}"
+            )
+        for asset in enabled_assets:
+            if asset.allocation_percentage is None or not 0 <= asset.allocation_percentage <= 1:
+                errors.append(f"{asset.symbol}: allocation_percentage must be between 0 and 1")
         
         # Validate trading config
         trading = self._config.trading

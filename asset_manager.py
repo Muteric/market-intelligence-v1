@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from decimal import Decimal, ROUND_HALF_UP
+from numeric_utils import round_finite
 
 class AssetSymbol(Enum):
     """Supported asset symbols"""
@@ -38,6 +39,8 @@ class Trade:
     exit_price: float = None
     exit_time: datetime = None
     position_size: float = None
+    capital_used: float = None
+    notional_value: float = None
     leverage: float = None
     floating_pnl: float = 0.0
     realized_pnl: float = 0.0
@@ -66,6 +69,7 @@ class AssetState:
     closed_trades: List[Trade] = None
     signal_history: List[Dict[str, Any]] = None
     performance_stats: Dict[str, Any] = None
+    starting_balance: float = None
     
     def __post_init__(self):
         if self.open_positions is None:
@@ -76,6 +80,8 @@ class AssetState:
             self.signal_history = []
         if self.performance_stats is None:
             self.performance_stats = self._initialize_performance_stats()
+        if self.starting_balance is None:
+            self.starting_balance = float(self.balance)
     
     def _initialize_performance_stats(self) -> Dict[str, Any]:
         """Initialize performance statistics"""
@@ -113,22 +119,46 @@ class AssetState:
 class AssetManager:
     """Manages independent state for each asset"""
     
-    def __init__(self, initial_balance: float = 100.0):
+    def __init__(self, initial_balance: float = 100.0,
+                 asset_configs: Optional[Dict[str, Any]] = None,
+                 base_position_size: float = 0.5,
+                 scaling_position_size: float = 0.25,
+                 max_positions: int = 3):
         if initial_balance < 0:
             raise ValueError("initial_balance must be non-negative")
         self.initial_balance = float(initial_balance)
+        self.base_position_size = float(base_position_size)
+        self.scaling_position_size = float(scaling_position_size)
+        self.max_positions = int(max_positions)
+        self.asset_configs = asset_configs or {}
         self.assets: Dict[str, AssetState] = {}
         self._initialize_assets()
     
     def _initialize_assets(self) -> None:
         """Initialize supported assets"""
-        symbols = list(AssetSymbol)
-        balance_per_asset = self.initial_balance / len(symbols) if symbols else 0.0
+        if self.asset_configs:
+            symbols = [
+                symbol for symbol, config in self.asset_configs.items()
+                if getattr(config, "enabled", True)
+            ]
+            allocations = {
+                symbol: float(getattr(self.asset_configs[symbol], "allocation_percentage", 0.0) or 0.0)
+                for symbol in symbols
+            }
+            if not any(allocations.values()) and symbols:
+                equal_allocation = 1.0 / len(symbols)
+                allocations = {symbol: equal_allocation for symbol in symbols}
+        else:
+            symbols = [symbol.value for symbol in AssetSymbol]
+            equal_allocation = 1.0 / len(symbols) if symbols else 0.0
+            allocations = {symbol: equal_allocation for symbol in symbols}
+
         for symbol in symbols:
-            self.assets[symbol.value] = AssetState(
-                symbol=symbol.value,
-                balance=balance_per_asset,
-                equity=balance_per_asset,
+            balance = self.initial_balance * allocations.get(symbol, 0.0)
+            self.assets[symbol] = AssetState(
+                symbol=symbol,
+                balance=balance,
+                equity=balance,
             )
     
     def get_asset_state(self, symbol: str) -> Optional[AssetState]:
@@ -146,18 +176,20 @@ class AssetManager:
             return False
         
         # Check position limit
-        if len(asset_state.open_positions) >= 3:
+        if len(asset_state.open_positions) >= self.max_positions:
             return False
         
         # Calculate position size based on account balance
         if len(asset_state.open_positions) == 0:
             # First position: 50% of balance
-            position_size = asset_state.balance * 0.5
+            position_size = asset_state.balance * self.base_position_size
         else:
             # Additional positions: 25% of balance
-            position_size = asset_state.balance * 0.25
-        
+            position_size = asset_state.balance * self.scaling_position_size
+
         trade.position_size = position_size
+        trade.capital_used = position_size
+        trade.notional_value = position_size * (trade.leverage or 1.0)
         trade.asset = symbol
         asset_state.open_positions.append(trade)
         return True
@@ -172,17 +204,23 @@ class AssetManager:
         for trade in asset_state.open_positions:
             if trade.id == trade_id:
                 # Calculate PnL
-                if trade.direction == PositionDirection.BUY.value:
-                    trade.realized_pnl = (exit_price - trade.entry_price) * trade.position_size
-                else:
-                    trade.realized_pnl = (trade.entry_price - exit_price) * trade.position_size
+                capital_used = trade.capital_used if trade.capital_used is not None else trade.position_size
+                leverage = trade.leverage or 1.0
+                notional_value = trade.notional_value or (capital_used * leverage)
+                price_return = (
+                    (exit_price - trade.entry_price) / trade.entry_price
+                    if trade.direction == PositionDirection.BUY.value
+                    else (trade.entry_price - exit_price) / trade.entry_price
+                )
+                trade.realized_pnl = notional_value * price_return
                 
                 trade.exit_price = exit_price
                 trade.exit_time = datetime.now(timezone.utc)
                 trade.status = TradeStatus.CLOSED.value
                 trade.close_reason = close_reason
                 trade.trade_duration = int((trade.exit_time - trade.entry_time).total_seconds() / 3600)
-                trade.roi = (trade.realized_pnl / (trade.position_size * trade.leverage)) * 100 if trade.position_size > 0 else 0
+                trade.roi = (trade.realized_pnl / capital_used) * 100 if capital_used > 0 else 0.0
+                asset_state.balance += trade.realized_pnl
                 
                 # Move to closed trades
                 asset_state.closed_trades.append(trade)
@@ -202,10 +240,14 @@ class AssetManager:
             return
         
         for trade in asset_state.open_positions:
-            if trade.direction == PositionDirection.BUY.value:
-                trade.floating_pnl = (current_price - trade.entry_price) * trade.position_size
-            else:
-                trade.floating_pnl = (trade.entry_price - current_price) * trade.position_size
+            capital_used = trade.capital_used if trade.capital_used is not None else trade.position_size
+            notional_value = trade.notional_value or (capital_used * (trade.leverage or 1.0))
+            price_return = (
+                (current_price - trade.entry_price) / trade.entry_price
+                if trade.direction == PositionDirection.BUY.value
+                else (trade.entry_price - current_price) / trade.entry_price
+            )
+            trade.floating_pnl = notional_value * price_return
     
     def get_open_positions_count(self, symbol: str) -> int:
         """Get number of open positions for an asset"""
@@ -216,6 +258,29 @@ class AssetManager:
         """Get all open positions for an asset"""
         asset_state = self.get_asset_state(symbol)
         return asset_state.open_positions.copy() if asset_state else []
+
+    def restore_trade(self, trade: Trade) -> bool:
+        """Restore a persisted trade without recalculating its allocation."""
+        asset_state = self.get_asset_state(trade.asset)
+        if not asset_state:
+            return False
+
+        if trade.status == TradeStatus.OPEN.value:
+            if len(asset_state.open_positions) >= self.max_positions:
+                return False
+            if trade.position_size is None:
+                return False
+            trade.capital_used = trade.capital_used or trade.position_size
+            trade.notional_value = trade.notional_value or (
+                trade.capital_used * (trade.leverage or 1.0)
+            )
+            asset_state.open_positions.append(trade)
+        else:
+            asset_state.closed_trades.append(trade)
+            asset_state.balance += trade.realized_pnl or 0.0
+
+        self._update_performance_stats(asset_state)
+        return True
     
     def get_recent_signals(self, symbol: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent signals for an asset"""
@@ -272,7 +337,7 @@ class AssetManager:
         total_realized_pnl = sum(t.realized_pnl for t in closed_trades)
         stats['total_floating_pnl'] = total_floating_pnl
         stats['total_realized_pnl'] = total_realized_pnl
-        stats['current_equity'] = asset_state.balance + total_floating_pnl + total_realized_pnl
+        stats['current_equity'] = asset_state.balance + total_floating_pnl
         
         # Calculate exposure
         total_position_value = sum(t.position_size for t in asset_state.open_positions)
@@ -283,4 +348,4 @@ class AssetManager:
     
     def round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
-        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        return round_finite(value, decimals) or 0.0

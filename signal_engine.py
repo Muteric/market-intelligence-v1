@@ -341,9 +341,11 @@ class SignalResult:
 class SignalEngine:
     """Generates trading signals and manages position logic"""
     
-    def __init__(self, asset_manager: AssetManager, trading_config: TradingConfig):
+    def __init__(self, asset_manager: AssetManager, trading_config: TradingConfig,
+                 portfolio_config=None):
         self.asset_manager = asset_manager
         self.trading_config = trading_config
+        self.portfolio_config = portfolio_config
         self.signal_history: Dict[str, List[SignalResult]] = {}
     
     def generate_signal(self, symbol: str, market_analysis: MarketAnalysis,
@@ -466,86 +468,70 @@ class SignalEngine:
         if decision == SignalDecision.HOLD:
             action_taken = "HOLD - No action taken"
         
-        elif decision == SignalDecision.STRONG_BUY:
-            action_taken = self._handle_buy_signal(symbol, open_positions, current_price, new_positions)
-        
-        elif decision == SignalDecision.BUY:
-            action_taken = self._handle_buy_signal(symbol, open_positions, current_price, new_positions)
-        
+        elif decision in (SignalDecision.STRONG_BUY, SignalDecision.BUY):
+            action_taken = self._handle_direction_signal(
+                symbol, PositionDirection.BUY.value, current_price,
+                new_positions, closed_positions
+            )
+
         elif decision == SignalDecision.SELL:
-            action_taken = self._handle_sell_signal(symbol, open_positions, current_price, closed_positions)
+            action_taken = self._handle_direction_signal(
+                symbol, PositionDirection.SELL.value, current_price,
+                new_positions, closed_positions
+            )
         
         elif decision == SignalDecision.AVOID_MARKET:
             action_taken = "AVOID MARKET - No trading"
         
         return action_taken, new_positions, closed_positions
     
-    def _handle_buy_signal(self, symbol: str, open_positions: List[Trade], 
-                          current_price: float, new_positions: List[Trade]) -> str:
-        """Handle BUY signal"""
-        if len(open_positions) < 3:
-            # Open new position
-            trade = Trade(
-                asset=symbol,
-                direction=PositionDirection.BUY.value,
-                entry_price=current_price,
-                leverage=self.trading_config.leverage,
-                status=TradeStatus.OPEN.value
+    def _handle_direction_signal(self, symbol: str, direction: str,
+                                 current_price: float, new_positions: List[Trade],
+                                 closed_positions: List[Trade]) -> str:
+        """Apply FIFO and reversal rules for one asset and one direction."""
+        open_positions = self.asset_manager.get_open_positions(symbol)
+        opposite = PositionDirection.SELL.value if direction == PositionDirection.BUY.value else PositionDirection.BUY.value
+        opposite_positions = [trade for trade in open_positions if trade.direction == opposite]
+
+        for position in opposite_positions:
+            closed_trade = self.asset_manager.close_position(
+                symbol, position.id, current_price, f"{direction} signal"
             )
-            
-            if self.asset_manager.add_open_position(symbol, trade):
-                new_positions.append(trade)
-                return f"BUY - Opened new position (Total: {len(open_positions) + 1}/3)"
-            else:
-                return "BUY - Failed to open position (limit reached)"
-        else:
-            # Use FIFO to close oldest position and open new one
-            oldest_position = open_positions[0]
-            self.asset_manager.close_position(symbol, oldest_position.id, current_price, "FIFO replacement")
-            
-            trade = Trade(
-                asset=symbol,
-                direction=PositionDirection.BUY.value,
-                entry_price=current_price,
-                leverage=self.trading_config.leverage,
-                status=TradeStatus.OPEN.value
-            )
-            
-            if self.asset_manager.add_open_position(symbol, trade):
-                new_positions.append(trade)
-                return f"BUY - Replaced oldest position (Total: 3/3)"
-            else:
-                return "BUY - Failed to replace position"
-    
-    def _handle_sell_signal(self, symbol: str, open_positions: List[Trade], 
-                           current_price: float, closed_positions: List[Trade]) -> str:
-        """Handle SELL signal"""
-        if not open_positions:
-            return "SELL - No positions to close"
-        
-        # Close all BUY positions
-        buy_positions = [p for p in open_positions if p.direction == PositionDirection.BUY.value]
-        for position in buy_positions:
-            closed_trade = self.asset_manager.close_position(symbol, position.id, current_price, "SELL signal")
             if closed_trade:
                 closed_positions.append(closed_trade)
-        
-        # Open new SELL position if needed
-        if len(open_positions) < 3:
-            trade = Trade(
-                asset=symbol,
-                direction=PositionDirection.SELL.value,
-                entry_price=current_price,
-                leverage=self.trading_config.leverage,
-                status=TradeStatus.OPEN.value
+
+        max_positions = getattr(
+            self.portfolio_config, "max_positions",
+            getattr(self.asset_manager, "max_positions", 3),
+        )
+        same_positions = [
+            trade for trade in self.asset_manager.get_open_positions(symbol)
+            if trade.direction == direction
+        ]
+        if len(same_positions) >= max_positions:
+            oldest = min(same_positions, key=lambda trade: trade.entry_time)
+            closed_trade = self.asset_manager.close_position(
+                symbol, oldest.id, current_price, "FIFO replacement"
             )
-            
-            if self.asset_manager.add_open_position(symbol, trade):
-                return f"SELL - Closed {len(buy_positions)} BUY positions, opened new SELL position"
-            else:
-                return f"SELL - Closed {len(buy_positions)} BUY positions, failed to open new position"
-        else:
-            return f"SELL - Closed {len(buy_positions)} BUY positions (3 SELL positions maintained)"
+            if closed_trade:
+                closed_positions.append(closed_trade)
+
+        trade = Trade(
+            asset=symbol,
+            direction=direction,
+            entry_price=current_price,
+            leverage=getattr(self.portfolio_config, "leverage", 1.0),
+            status=TradeStatus.OPEN.value,
+        )
+        if not self.asset_manager.add_open_position(symbol, trade):
+            return f"{direction} - Position limit prevented opening"
+        new_positions.append(trade)
+
+        if opposite_positions:
+            return f"{direction} - Closed {len(closed_positions)} opposite position(s), opened new position"
+        if len(same_positions) >= max_positions:
+            return f"{direction} - Replaced oldest position (Total: {max_positions}/{max_positions})"
+        return f"{direction} - Opened new position (Total: {len(same_positions) + 1}/{max_positions})"
     
     def _add_signal_to_asset_state(self, symbol: str, signal_result: SignalResult) -> None:
         """Add signal result to asset state"""

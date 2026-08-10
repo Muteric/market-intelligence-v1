@@ -195,6 +195,19 @@ class TechnicalIndicators:
         for key in [self.price_history, self.volume_history, self.high_history, self.low_history]:
             if len(key[symbol]) > max_points:
                 key[symbol] = key[symbol][-max_points:]
+
+    def set_ohlcv_data(self, symbol: str, candles: List[Dict[str, float]]) -> None:
+        """Replace a symbol's history with validated observed OHLCV candles."""
+        valid = [
+            candle for candle in candles
+            if all(candle.get(field) is not None for field in ("high", "low", "close"))
+        ]
+        if not valid:
+            raise ValueError(f"DATA UNAVAILABLE: no valid OHLCV candles for {symbol}")
+        self.price_history[symbol] = [float(candle["close"]) for candle in valid[-1000:]]
+        self.volume_history[symbol] = [float(candle.get("volume", 0.0)) for candle in valid[-1000:]]
+        self.high_history[symbol] = [float(candle["high"]) for candle in valid[-1000:]]
+        self.low_history[symbol] = [float(candle["low"]) for candle in valid[-1000:]]
     
     def calculate_all_indicators(self, symbol: str) -> TechnicalIndicatorsResult:
         """Calculate all technical indicators for a symbol"""
@@ -203,8 +216,11 @@ class TechnicalIndicators:
         highs = self.high_history.get(symbol, [])
         lows = self.low_history.get(symbol, [])
         
-        if len(prices) < 2:
-            raise ValueError(f"DATA UNAVAILABLE: insufficient price history for {symbol}")
+        if len(prices) < 200 or len(highs) != len(prices) or len(lows) != len(prices):
+            raise ValueError(
+                f"DATA UNAVAILABLE: insufficient OHLCV history for {symbol} "
+                f"(need 200 complete candles, received {len(prices)})"
+            )
         
         # Calculate individual indicators
         rsi = self._calculate_rsi(symbol)

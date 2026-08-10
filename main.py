@@ -47,9 +47,20 @@ class AITradingIntelligenceBot:
     def __init__(self, config_file: str = "app_config.json"):
         self.config_manager = ConfigurationManager(config_file)
         self.config = self.config_manager.get_config()
+        config_errors = self.config_manager.validate_config()
+        if config_errors:
+            raise RuntimeError(
+                "STARTUP VALIDATION FAILED: " + "; ".join(config_errors)
+            )
         
         # Initialize core components
-        self.asset_manager = AssetManager(self.config.portfolio.initial_balance)
+        self.asset_manager = AssetManager(
+            self.config.portfolio.initial_balance,
+            self.config.assets,
+            self.config.portfolio.base_position_size,
+            self.config.portfolio.scaling_position_size,
+            self.config.portfolio.max_positions,
+        )
         self.market_analyzers: Dict[str, MarketAnalyzer] = {}
         self.signal_engine: Optional[SignalEngine] = None
         self.trade_manager: Optional[TradeManager] = None
@@ -128,7 +139,8 @@ class AITradingIntelligenceBot:
         # Initialize signal engine
         self.signal_engine = SignalEngine(
             self.asset_manager,
-            self.config.trading
+            self.config.trading,
+            self.config.portfolio,
         )
         
         # Initialize Telegram formatter
@@ -225,46 +237,28 @@ class AITradingIntelligenceBot:
                 "stale": validation_result.stale_providers,
                 "confidence": validation_result.confidence_score,
                 "timestamp": validation_result.validation_timestamp,
+                "provider_total": len(self.market_data_aggregator.providers),
+                "ohlcv_provider": validation_result.ohlcv_provider,
+                "ohlcv_candles": len(validation_result.ohlcv or []),
             }
             logger.info("%s price validated", symbol)
 
-            previous_prices = self.technical_indicators.price_history.get(symbol, []) if self.technical_indicators else []
-            previous_price = validation_result.previous_price or (previous_prices[-1] if previous_prices else None)
-            
-            # Update technical indicators with current price
+            ohlcv = validation_result.ohlcv or []
+            if len(ohlcv) < 200:
+                raise ValueError(
+                    f"DATA UNAVAILABLE: insufficient validated OHLCV for {symbol} "
+                    f"(received {len(ohlcv)} candles)"
+                )
+            previous_price = validation_result.previous_price or float(ohlcv[-2]["close"])
+
             if self.technical_indicators:
-                if not previous_prices and previous_price is not None:
-                    self.technical_indicators.update_price_data(
-                        symbol, previous_price, validation_result.consensus_volume
-                    )
-                self.technical_indicators.update_price_data(
-                    symbol,
-                    validation_result.consensus_price,
-                    validation_result.consensus_volume
-                )
-            
-            # Update multi-timeframe analyzer with current price
+                self.technical_indicators.set_ohlcv_data(symbol, ohlcv)
+
             if self.multi_timeframe_analyzer:
-                if not previous_prices and previous_price is not None:
-                    for timeframe in ("5M", "15M", "1H", "4H", "Daily"):
-                        self.multi_timeframe_analyzer.update_timeframe_data(
-                            symbol, timeframe, previous_price, validation_result.consensus_volume
-                        )
-                self.multi_timeframe_analyzer.update_timeframe_data(
-                    symbol, "5M", validation_result.consensus_price, validation_result.consensus_volume
-                )
-                self.multi_timeframe_analyzer.update_timeframe_data(
-                    symbol, "15M", validation_result.consensus_price, validation_result.consensus_volume
-                )
-                self.multi_timeframe_analyzer.update_timeframe_data(
-                    symbol, "1H", validation_result.consensus_price, validation_result.consensus_volume
-                )
-                self.multi_timeframe_analyzer.update_timeframe_data(
-                    symbol, "4H", validation_result.consensus_price, validation_result.consensus_volume
-                )
-                self.multi_timeframe_analyzer.update_timeframe_data(
-                    symbol, "Daily", validation_result.consensus_price, validation_result.consensus_volume
-                )
+                for timeframe in ("5M", "15M", "1H", "4H", "Daily"):
+                    self.multi_timeframe_analyzer.set_timeframe_ohlcv(
+                        symbol, timeframe, ohlcv
+                    )
             
             if previous_price is None:
                 logger.warning("%s previous price unavailable; awaiting another validated observation", symbol)
@@ -284,7 +278,8 @@ class AITradingIntelligenceBot:
             # Load trades
             trades = self.trade_storage.get_trades()
             for trade in trades:
-                self.asset_manager.add_open_position(trade.asset, trade)
+                if not self.asset_manager.restore_trade(trade):
+                    logger.warning("Skipping invalid persisted trade %s", trade.id)
             
             # Load portfolio stats
             stats = self.trade_storage.get_portfolio_stats()
@@ -332,7 +327,8 @@ class AITradingIntelligenceBot:
                     multi_timeframe = self.multi_timeframe_analyzer.analyze_multi_timeframe(symbol)
                     ai_decision = self.ai_decision_engine.generate_decision(
                         symbol, market_analysis, technical_indicators, multi_timeframe,
-                        current_price, previous_price
+                        current_price, previous_price,
+                        data_confidence=self.market_data_status[symbol].get("confidence", 0.0),
                     )
                     signal_result = self.signal_engine.generate_signal(
                         symbol,
