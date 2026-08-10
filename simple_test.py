@@ -157,13 +157,13 @@ def test_risk_manager():
     assert 'exposure_ratio' in risk_metrics
     print("✅ RiskManager test passed")
 
-def test_trade_storage():
+def test_trade_storage(tmp_path):
     """Test TradeStorage"""
     print("Testing TradeStorage...")
     from configuration_manager import SystemConfig
     
     system_config = SystemConfig(
-        data_directory="./test_data",
+        data_directory=str(tmp_path),
         backup_enabled=False
     )
     
@@ -185,11 +185,6 @@ def test_trade_storage():
     loaded_trades = trade_storage.get_trades("BTCUSD")
     assert len(loaded_trades) == 1
     assert loaded_trades[0].asset == "BTCUSD"
-    
-    # Cleanup
-    import shutil
-    if os.path.exists("./test_data"):
-        shutil.rmtree("./test_data")
     
     print("✅ TradeStorage test passed")
 
@@ -239,7 +234,9 @@ def main():
         test_portfolio_manager()
         test_profit_calculator()
         test_risk_manager()
-        test_trade_storage()
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_trade_storage(temp_dir)
         test_performance_tracker()
         test_telegram_formatter()
         
