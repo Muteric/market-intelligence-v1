@@ -9,11 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import math
+import logging
 
-from configuration_manager import TradingConfig, AssetConfig
+from configuration_manager import TradingConfig, PortfolioConfig
 from market_analyzer import MarketAnalysis
-from portfolio_manager import PortfolioManager
-from risk_calculator import RiskCalculator, RiskMetrics
+from portfolio_manager import PortfolioManager, PortfolioMetrics
+from risk_calculator import RiskCalculator
 from performance_tracker import (
     PerformanceTracker,
     PerformanceMetricType,
@@ -23,10 +24,12 @@ from performance_tracker import (
 from technical_indicators import TechnicalIndicatorsResult
 from market_regime_detector import (
     MarketRegimeDetector,
-    MarketRegime,
+    MarketRegimeResult,
 )
 from multi_timeframe_analyzer import MultiTimeframeResult
 from asset_manager import AssetManager, Trade, PositionDirection, TradeStatus
+
+logger = logging.getLogger(__name__)
 
 class SignalDecision(Enum):
     """Trading signal decisions"""
@@ -34,37 +37,10 @@ class SignalDecision(Enum):
     SELL = "SELL"
     HOLD = "HOLD"
 
-@dataclass
-class MarketRegime:
-    """Market regime classification"""
-    regime: str
-    strength: float
-    description: str
-
-@dataclass
-class RiskMetrics:
-    """Risk metrics for trading decisions"""
-    volatility_score: float
-    correlation_score: float
-    drawdown_score: float
-    exposure_score: float
-    overall_risk_score: float
-
-@dataclass
-class PortfolioState:
-    """Current portfolio state"""
-    total_balance: float
-    total_equity: float
-    floating_pnl: float
-    realized_pnl: float
-    net_pnl: float
-    win_rate: float
-    profit_factor: float
-    max_drawdown: float
-    open_positions_count: int
-    daily_trades: int
-    weekly_trades: int
-    monthly_trades: int
+# Compatibility aliases keep existing imports working without defining duplicate models.
+MarketRegime = MarketRegimeResult
+RiskMetrics = __import__("risk_calculator").RiskMetrics
+PortfolioState = PortfolioMetrics
 
 @dataclass
 class AIDecisionResult:
@@ -84,9 +60,9 @@ class AIDecisionResult:
     trend: str
     momentum: float
     volatility: str
-    market_regime: MarketRegime
+    market_regime: MarketRegimeResult
     risk_metrics: RiskMetrics
-    portfolio_state: PortfolioState
+    portfolio_state: PortfolioMetrics
     technical_indicators: TechnicalIndicatorsResult
     multi_timeframe: MultiTimeframeResult
     open_trades: List[Trade]
@@ -97,17 +73,20 @@ class AIDecisionResult:
 class AIDecisionEngine:
     """Enhanced AI decision engine with comprehensive market analysis"""
     
-    def __init__(self, asset_manager: AssetManager, trading_config: TradingConfig):
+    def __init__(self, asset_manager: AssetManager, trading_config: TradingConfig,
+                 portfolio_config: PortfolioConfig = None,
+                 performance_tracker: PerformanceTracker = None):
         self.asset_manager = asset_manager
         self.trading_config = trading_config
         self.market_regime_detector = MarketRegimeDetector()
         self.risk_calculator = RiskCalculator()
+        self.portfolio_config = portfolio_config or PortfolioConfig()
         self.portfolio_manager = PortfolioManager(
-    asset_manager,
-    trading_config.portfolio_config,
-    trading_config
-)
-        self.performance_tracker = PerformanceTracker()
+            asset_manager, self.portfolio_config, trading_config
+        )
+        self.performance_tracker = performance_tracker or PerformanceTracker(
+            asset_manager, self.portfolio_config
+        )
     
     def generate_decision(self, symbol: str, market_analysis: MarketAnalysis, 
                          technical_indicators: TechnicalIndicatorsResult,
@@ -332,7 +311,7 @@ class AIDecisionEngine:
             return False
         
         # Market regime must be favorable
-        if market_regime.regime in ["High Volatility", "Capitulation", "Low Liquidity"]:
+        if market_regime.regime.value in ["High Volatility", "Capitulation", "Low Liquidity"]:
             return False
         
         return True
@@ -369,7 +348,7 @@ class AIDecisionEngine:
             return False
         
         # Market regime must be unfavorable
-        if market_regime.regime in ["Strong Trending", "Expansion"]:
+        if market_regime.regime.value in ["Strong Trending", "Expansion"]:
             return False
         
         return True
@@ -394,7 +373,7 @@ class AIDecisionEngine:
             return True
         
         # Market regime is uncertain
-        if market_regime.regime in ["Neutral", "Consolidation", "Range Bound"]:
+        if market_regime.regime.value in ["Neutral", "Consolidation", "Range Bound"]:
             return True
         
         # Risk metrics are too high
@@ -430,9 +409,9 @@ class AIDecisionEngine:
         confidence += abs(multi_timeframe.momentum_alignment) * 0.15
         
         # Adjust based on market regime
-        if market_regime.regime in ["Strong Trending", "Strong Bearish"]:
+        if market_regime.regime.value in ["Strong Trending", "Strong Bearish"]:
             confidence += 0.2
-        elif market_regime.regime in ["High Volatility", "Capitulation"]:
+        elif market_regime.regime.value in ["High Volatility", "Capitulation"]:
             confidence -= 0.3
         
         # Adjust based on risk metrics
@@ -474,8 +453,8 @@ class AIDecisionEngine:
         if abs(multi_timeframe.momentum_alignment) > 0.5:
             explanation.append("✅ Strong momentum alignment")
         
-        if market_regime.regime in ["Strong Trending", "Strong Bearish"]:
-            explanation.append(f"✅ Favorable market regime: {market_regime.regime}")
+        if market_regime.regime.value in ["Strong Trending", "Strong Bearish"]:
+            explanation.append(f"✅ Favorable market regime: {market_regime.regime.value}")
         
         # Add factors that decreased confidence
         if multi_timeframe.trend_alignment == "MIXED_ALIGNMENT":
@@ -579,11 +558,11 @@ class AIDecisionEngine:
             narrative += "Multiple timeframes show bearish alignment. "
         
         # Add market regime information
-        narrative += f"Current market regime: {market_regime.regime}. "
+        narrative += f"Current market regime: {market_regime.regime.value}. "
         
         # Add portfolio information
-        if portfolio_state.floating_pnl > 0:
-            narrative += f"Portfolio showing positive PnL: ${portfolio_state.floating_pnl:.2f}. "
+        if portfolio_state.total_floating_pnl > 0:
+            narrative += f"Portfolio showing positive PnL: ${portfolio_state.total_floating_pnl:.2f}. "
         
         return narrative
     

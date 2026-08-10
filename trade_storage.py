@@ -6,6 +6,7 @@ Persistent storage for trades, portfolio statistics, and performance data.
 import json
 import sqlite3
 import uuid
+import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
@@ -15,6 +16,8 @@ from pathlib import Path
 
 from asset_manager import Trade, TradeStatus
 from configuration_manager import SystemConfig
+
+logger = logging.getLogger(__name__)
 
 class StorageType(Enum):
     """Storage types"""
@@ -204,7 +207,7 @@ class TradeStorage:
             
             return True
         except Exception as e:
-            print(f"Error saving trade: {e}")
+            logger.exception("Error saving trade")
             return False
     
     def save_portfolio_stats(self, stats: Dict[str, Any]) -> bool:
@@ -218,7 +221,7 @@ class TradeStorage:
             
             return True
         except Exception as e:
-            print(f"Error saving portfolio stats: {e}")
+            logger.exception("Error saving portfolio stats")
             return False
     
     def save_signal(self, signal_data: Dict[str, Any]) -> bool:
@@ -232,7 +235,7 @@ class TradeStorage:
             
             return True
         except Exception as e:
-            print(f"Error saving signal: {e}")
+            logger.exception("Error saving signal")
             return False
     
     def get_trades(self, symbol: str = None, status: str = None, 
@@ -312,7 +315,7 @@ class TradeStorage:
             
             return True
         except Exception as e:
-            print(f"Error creating backup: {e}")
+            logger.exception("Error creating backup")
             return False
     
     def restore_from_backup(self, backup_file: str) -> bool:
@@ -337,7 +340,7 @@ class TradeStorage:
             
             return True
         except Exception as e:
-            print(f"Error restoring from backup: {e}")
+            logger.exception("Error restoring from backup")
             return False
     
     def _save_trade_sqlite(self, trade: Trade) -> None:

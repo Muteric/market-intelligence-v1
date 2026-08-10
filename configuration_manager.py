@@ -105,7 +105,10 @@ class ConfigurationManager:
         }
         
         trading = TradingConfig()
-        system = SystemConfig()
+        system = SystemConfig(
+            telegram_token=os.getenv('TELEGRAM_TOKEN', ''),
+            telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID', '843487976'),
+        )
         
         return AppConfig(
             portfolio=portfolio,
@@ -151,8 +154,8 @@ class ConfigurationManager:
         
         system_data = data.get('system', {})
         system = SystemConfig(
-            telegram_token=system_data.get('telegram_token', ''),
-            telegram_chat_id=system_data.get('telegram_chat_id', '843487976'),
+            telegram_token=system_data.get('telegram_token', '') or os.getenv('TELEGRAM_TOKEN', ''),
+            telegram_chat_id=system_data.get('telegram_chat_id', '') or os.getenv('TELEGRAM_CHAT_ID', '843487976'),
             alert_state_file=system_data.get('alert_state_file', '.market_alert_state.json'),
             trade_history_file=system_data.get('trade_history_file', 'trade_history.json'),
             portfolio_stats_file=system_data.get('portfolio_stats_file', 'portfolio_stats.json'),

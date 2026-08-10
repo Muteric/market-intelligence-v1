@@ -4,6 +4,7 @@ Manages portfolio performance, metrics, and overall portfolio statistics.
 """
 
 import uuid
+import math
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -73,6 +74,7 @@ class PortfolioMetrics:
     available_margin: float = 100.0
     used_margin: float = 0.0
     total_closed_trades: int = 0
+    open_positions_count: int = 0
 
 class PortfolioManager:
     """Manages portfolio performance and metrics"""
@@ -207,7 +209,8 @@ class PortfolioManager:
             balance=self._round_decimal(total_balance),
             available_margin=self._round_decimal(total_balance),
             used_margin=self._round_decimal(total_position_value),
-            total_closed_trades=total_trades
+            total_closed_trades=total_trades,
+            open_positions_count=sum(len(asset.open_positions) for asset in all_assets.values())
         )
         
         # Store metrics history
@@ -428,4 +431,6 @@ class PortfolioManager:
     
     def _round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
+        if not math.isfinite(float(value)):
+            return 0.0
         return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))

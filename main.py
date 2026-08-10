@@ -6,6 +6,9 @@ Comprehensive trading system for BTCUSD and XAUUSD with modular architecture.
 import json
 import logging
 import time
+import asyncio
+import os
+from urllib import parse, request
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -70,6 +73,7 @@ class AITradingIntelligenceBot:
         
         # Initialize enhanced components
         self._initialize_enhanced_components()
+        self._validate_startup()
         
         # Set up monitoring
         self.last_scan_time = datetime.now(timezone.utc)
@@ -148,7 +152,9 @@ class AITradingIntelligenceBot:
         # Initialize AI decision engine for enhanced signal generation
         self.ai_decision_engine = AIDecisionEngine(
             self.asset_manager,
-            self.config.trading
+            self.config.trading,
+            self.config.portfolio,
+            self.performance_tracker,
         )
         
         # Initialize trade execution simulator for testing
@@ -160,12 +166,37 @@ class AITradingIntelligenceBot:
         
         # Initialize reliability manager for system monitoring
         self.reliability_manager = ReliabilityManager()
+
+    def _validate_startup(self) -> None:
+        """Validate initialized components before a scan begins."""
+        components = {
+            "Configuration": self.config,
+            "Asset manager": self.asset_manager,
+            "Market analyzer": self.market_analyzers,
+            "Signal engine": self.signal_engine,
+            "AI decision engine": self.ai_decision_engine,
+            "Trade manager": self.trade_manager,
+            "Portfolio manager": self.portfolio_manager,
+            "Performance tracker": self.performance_tracker,
+            "Trade storage": self.trade_storage,
+            "Telegram formatter": self.telegram_formatter,
+        }
+        missing = [name for name, value in components.items() if not value]
+        if missing:
+            details = ", ".join(missing)
+            raise RuntimeError(f"STARTUP VALIDATION FAILED: {details}")
+        for name in components:
+            logger.info("[OK] %s loaded", name)
+        logger.info("[OK] Telegram configuration loaded (token=%s)",
+                    "available" if self.config.system.telegram_token else "not configured")
     
-    def _get_live_market_data(self, symbol: str) -> Tuple[float, float]:
+    def _get_live_market_data(self, symbol: str) -> Optional[Tuple[float, float]]:
         """Get live market data with consensus pricing from multiple sources"""
         try:
             # Fetch market data from all providers with validation
-            validation_result = self.market_data_aggregator.fetch_market_data(symbol)
+            validation_result = asyncio.run(
+                self.market_data_aggregator.fetch_market_data(symbol)
+            )
             
             # Log consensus pricing information
             logger.info(f"Live market data for {symbol}: "
@@ -207,9 +238,8 @@ class AITradingIntelligenceBot:
             
         except Exception as e:
             logger.error(f"Error fetching live market data for {symbol}: {e}")
-            # Fallback to placeholder prices if live data fails
-            logger.warning(f"Using fallback prices for {symbol}")
-            return 100000.0, 99000.0
+            logger.warning(f"No valid market data for {symbol}; skipping this asset")
+            return None
     
     def _load_existing_data(self) -> None:
         """Load existing data from storage"""
@@ -247,7 +277,10 @@ class AITradingIntelligenceBot:
             
             for symbol, analyzer in self.market_analyzers.items():
                 # Get current price from market data aggregator with live verification
-                current_price, previous_price = self._get_live_market_data(symbol)
+                market_data = self._get_live_market_data(symbol)
+                if market_data is None:
+                    continue
+                current_price, previous_price = market_data
                 
                 # Analyze market with enhanced technical indicators
                 market_analysis = analyzer.analyze_market(
@@ -419,11 +452,24 @@ class AITradingIntelligenceBot:
             logger.error(f"Error saving portfolio stats: {e}")
     
     def _send_telegram_message(self, message: str) -> bool:
-        """Send message to Telegram (placeholder)"""
-        # This would use the existing send_telegram_message function
-        # For now, just log the message
-        logger.info(f"Telegram message: {message}")
-        return True
+        """Send a report when Telegram credentials are available; otherwise log it."""
+        token = self.config.system.telegram_token or os.getenv("TELEGRAM_TOKEN", "")
+        chat_id = self.config.system.telegram_chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            logger.info("Telegram not configured; report generated: %s", message)
+            return True
+        try:
+            payload = parse.urlencode({"chat_id": chat_id, "text": message}).encode()
+            req = request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                method="POST",
+            )
+            with request.urlopen(req, timeout=10) as response:
+                return 200 <= response.status < 300
+        except Exception:
+            logger.exception("Telegram delivery failed")
+            return False
     
     def run_continuous(self, interval_minutes: int = 15) -> None:
         """Run the bot continuously"""

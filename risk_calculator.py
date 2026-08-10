@@ -26,6 +26,11 @@ class RiskMetrics:
     margin_used: float
     margin_available: float
 
+    @property
+    def overall_risk_score(self) -> float:
+        """Normalized risk score used by decision rules (0 is low, 1 is high)."""
+        return max(0.0, min(1.0, 1.0 - (self.risk_score / 100.0)))
+
 
 class RiskCalculator:
 
@@ -53,11 +58,8 @@ class RiskCalculator:
             0.0
         )
 
-        atr = getattr(
-            technical_indicators,
-            "atr",
-            current_price * 0.01
-        )
+        atr_result = getattr(technical_indicators, "atr", None)
+        atr = float(getattr(atr_result, "atr", atr_result or current_price * 0.01))
 
         volatility = getattr(
             market_analysis,
@@ -65,11 +67,9 @@ class RiskCalculator:
             "Medium"
         )
 
-        trend_strength = getattr(
-            market_analysis,
-            "trend_strength",
-            50
-        )
+        trend_strength = float(getattr(market_analysis, "strength_score", 50))
+        if trend_strength <= 1:
+            trend_strength *= 100
 
         # ---------- Position Size ----------
 

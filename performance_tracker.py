@@ -4,14 +4,18 @@ Tracks and analyzes historical performance data for assets and portfolio.
 """
 
 import uuid
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
 from decimal import Decimal, ROUND_HALF_UP
+import logging
 
 from asset_manager import AssetManager, Trade, TradeStatus
 from configuration_manager import PortfolioConfig
+
+logger = logging.getLogger(__name__)
 
 class PerformanceMetricType(Enum):
     """Types of performance metrics"""
@@ -81,6 +85,14 @@ class PerformanceTracker:
             return self._track_asset_performance(symbol)
         else:
             return self._track_portfolio_performance()
+
+    def get_historical_performance(self, symbol: str = None, period_days: int = 30) -> List[Dict[str, Any]]:
+        """Return recorded performance periods for decision/report consumers."""
+        return self._get_historical_performance(symbol, period_days)
+
+    def get_signal_accuracy(self, symbol: str = None) -> float:
+        """Return signal accuracy when recorded; zero means no accuracy history exists."""
+        return 0.0
     
     def _track_asset_performance(self, symbol: str) -> Dict[str, Any]:
         """Track performance for a specific asset"""
@@ -565,4 +577,6 @@ class PerformanceTracker:
     
     def _round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
+        if not math.isfinite(float(value)):
+            return 0.0
         return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))

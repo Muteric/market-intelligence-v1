@@ -127,7 +127,7 @@ class MultiTimeframeAnalyzer:
         highs = self.timeframe_highs.get(symbol, {}).get(timeframe, prices)
         lows = self.timeframe_lows.get(symbol, {}).get(timeframe, prices)
         
-        if len(prices) < 3:
+        if not prices:
             return None
         
         # Calculate current price (last price)
@@ -168,7 +168,13 @@ class MultiTimeframeAnalyzer:
     
     def _determine_timeframe_trend(self, prices: List[float], timeframe: str) -> str:
         """Determine trend for a single timeframe"""
+        if len(prices) < 2:
+            return "neutral"
         if len(prices) < 5:
+            if prices[-1] > prices[-2]:
+                return "bullish"
+            if prices[-1] < prices[-2]:
+                return "bearish"
             return "neutral"
         
         # Calculate moving averages based on timeframe

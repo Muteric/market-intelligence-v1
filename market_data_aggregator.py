@@ -11,7 +11,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import dataclass
-import requests
+try:
+    import requests
+except ImportError:  # Optional at import time; requirements installs it in CI.
+    requests = None
 import random
 
 from configuration_manager import AssetConfig
@@ -136,7 +139,7 @@ class MarketDataAggregator:
     async def fetch_market_data(self, symbol: str) -> PriceValidationResult:
         """Fetch market data from all providers and validate"""
         logger.info(f"Fetching market data for {symbol} from all providers")
-        
+
         # Fetch data from all providers
         provider_data = {}
         for provider_name in self.providers:
@@ -164,6 +167,9 @@ class MarketDataAggregator:
     
     async def _fetch_from_provider(self, provider_name: str, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from a specific provider"""
+        if requests is None:
+            logger.warning("Provider %s unavailable: requests dependency is not installed", provider_name)
+            return None
         provider = self.providers[provider_name]
         start_time = time.time()
         

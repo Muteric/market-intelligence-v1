@@ -408,8 +408,8 @@ class TechnicalIndicators:
     def _calculate_atr(self, symbol: str) -> ATRResult:
         """Calculate ATR (Average True Range)"""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol, prices)
-        lows = self.low_history.get(symbol, prices)
+        highs = self.high_history.get(symbol) or prices
+        lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 14:
             return ATRResult(0.0, 0.0, "low")
@@ -447,8 +447,8 @@ class TechnicalIndicators:
     def _calculate_adx(self, symbol: str) -> ADXResult:
         """Calculate ADX (Average Directional Index)"""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol, prices)
-        lows = self.low_history.get(symbol, prices)
+        highs = self.high_history.get(symbol) or prices
+        lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 14:
             return ADXResult(0.0, 0.0, 0.0, "neutral", "neutral")
@@ -527,8 +527,8 @@ class TechnicalIndicators:
     def _calculate_stochastic(self, symbol: str) -> StochasticResult:
         """Calculate Stochastic Oscillator"""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol, prices)
-        lows = self.low_history.get(symbol, prices)
+        highs = self.high_history.get(symbol) or prices
+        lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 14:
             return StochasticResult(50.0, 50.0, False, False, "neutral")
@@ -653,11 +653,11 @@ class TechnicalIndicators:
     def _calculate_ichimoku(self, symbol: str) -> IchimokuResult:
         """Calculate Ichimoku Cloud"""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol, prices)
-        lows = self.low_history.get(symbol, prices)
+        highs = self.high_history.get(symbol) or prices
+        lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 26:
-            return IchimokuResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "neutral")
+            return IchimokuResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "neutral", 0.0, 0.0)
         
         # Calculate Tenkan-sen (Conversion Line) - 9-period
         recent_highs = highs[-9:] if len(highs) >= 9 else highs
@@ -746,15 +746,15 @@ class TechnicalIndicators:
     def _calculate_pivot_points(self, symbol: str) -> PivotPointsResult:
         """Calculate pivot points"""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol, prices)
-        lows = self.low_history.get(symbol, prices)
+        highs = self.high_history.get(symbol) or prices
+        lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 1:
             return PivotPointsResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "none")
         
         # Calculate pivot point
-        current_high = max(highs[-1] if highs else prices[-1])
-        current_low = min(lows[-1] if lows else prices[-1])
+        current_high = highs[-1] if highs else prices[-1]
+        current_low = lows[-1] if lows else prices[-1]
         current_close = prices[-1]
         
         pivot = (current_high + current_low + current_close) / 3
