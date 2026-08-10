@@ -26,7 +26,7 @@ from telegram_formatter import TelegramFormatter, ReportFormat
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TestMarketDataAggregator:
+class ManualMarketDataAggregator:
     """Test Market Data Aggregator functionality"""
     
     def __init__(self):
@@ -152,7 +152,7 @@ class TestMarketDataAggregator:
             source="yahoo_finance"
         )
 
-class TestTechnicalIndicators:
+class ManualTechnicalIndicators:
     """Test Technical Indicators functionality"""
     
     def __init__(self):
@@ -236,7 +236,7 @@ class TestTechnicalIndicators:
         
         logger.info("✓ Bollinger Bands calculation test passed")
 
-class TestMultiTimeframeAnalyzer:
+class ManualMultiTimeframeAnalyzer:
     """Test Multi-Timeframe Analyzer functionality"""
     
     def __init__(self):
@@ -280,7 +280,7 @@ class TestMultiTimeframeAnalyzer:
         
         logger.info("✓ Trend alignment test passed")
 
-class TestAIDecisionEngine:
+class ManualAIDecisionEngine:
     """Test AI Decision Engine functionality"""
     
     def __init__(self):
@@ -400,7 +400,7 @@ class TestAIDecisionEngine:
         
         logger.info("✓ AI decision generation test passed")
 
-class TestTradeExecutionSimulator:
+class ManualTradeExecutionSimulator:
     """Test Trade Execution Simulator functionality"""
     
     def __init__(self):
@@ -445,7 +445,7 @@ class TestTradeExecutionSimulator:
         
         logger.info("✓ Portfolio metrics calculation test passed")
 
-class TestReliabilityManager:
+class ManualReliabilityManager:
     """Test Reliability Manager functionality"""
     
     def __init__(self):
@@ -491,7 +491,7 @@ class TestReliabilityManager:
         
         logger.info("✓ Health status test passed")
 
-class TestTelegramFormatter:
+class ManualTelegramFormatter:
     """Test Telegram Formatter functionality"""
     
     def __init__(self):
@@ -555,7 +555,7 @@ class TestTelegramFormatter:
         
         logger.info("✓ Portfolio report formatting test passed")
 
-class TestIntegration:
+class ManualIntegration:
     """Test integration of all components"""
     
     def __init__(self):
@@ -667,43 +667,43 @@ async def run_all_tests():
     logger.info("Starting comprehensive test suite...")
     
     # Test Market Data Aggregator
-    market_data_tester = TestMarketDataAggregator()
+    market_data_tester = ManualMarketDataAggregator()
     await market_data_tester.test_multi_source_data_collection()
     await market_data_tester.test_price_validation()
     
     # Test Technical Indicators
-    technical_tester = TestTechnicalIndicators()
+    technical_tester = ManualTechnicalIndicators()
     technical_tester.test_rsi_calculation()
     technical_tester.test_macd_calculation()
     technical_tester.test_ema_calculation()
     technical_tester.test_bollinger_bands_calculation()
     
     # Test Multi-Timeframe Analyzer
-    timeframe_tester = TestMultiTimeframeAnalyzer()
+    timeframe_tester = ManualMultiTimeframeAnalyzer()
     timeframe_tester.test_timeframe_data_collection()
     timeframe_tester.test_trend_alignment()
     
     # Test AI Decision Engine
-    ai_tester = TestAIDecisionEngine()
+    ai_tester = ManualAIDecisionEngine()
     ai_tester.test_ai_decision_generation()
     
     # Test Trade Execution Simulator
-    execution_tester = TestTradeExecutionSimulator()
+    execution_tester = ManualTradeExecutionSimulator()
     execution_tester.test_trade_execution()
     execution_tester.test_portfolio_metrics_calculation()
     
     # Test Reliability Manager
-    reliability_tester = TestReliabilityManager()
+    reliability_tester = ManualReliabilityManager()
     await reliability_tester.test_reliability_execution()
     reliability_tester.test_health_status()
     
     # Test Telegram Formatter
-    telegram_tester = TestTelegramFormatter()
+    telegram_tester = ManualTelegramFormatter()
     telegram_tester.test_signal_report_formatting()
     telegram_tester.test_portfolio_report_formatting()
     
     # Test Integration
-    integration_tester = TestIntegration()
+    integration_tester = ManualIntegration()
     await integration_tester.test_complete_workflow()
     
     logger.info("✓ All tests passed successfully!")

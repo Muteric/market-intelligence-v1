@@ -11,11 +11,11 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
-from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from asset_manager import Trade, TradeStatus
 from configuration_manager import SystemConfig
+from numeric_utils import round_finite
 
 logger = logging.getLogger(__name__)
 
@@ -633,8 +633,14 @@ class TradeStorage:
         # Convert strings to appropriate types
         trade_dict['entry_price'] = float(trade_dict['entry_price'])
         trade_dict['exit_price'] = float(trade_dict['exit_price']) if trade_dict['exit_price'] else None
-        trade_dict['position_size'] = float(trade_dict['position_size'])
-        trade_dict['leverage'] = float(trade_dict['leverage'])
+        trade_dict['position_size'] = (
+            float(trade_dict['position_size'])
+            if trade_dict.get('position_size') is not None else None
+        )
+        trade_dict['leverage'] = (
+            float(trade_dict['leverage'])
+            if trade_dict.get('leverage') is not None else None
+        )
         trade_dict['floating_pnl'] = float(trade_dict['floating_pnl'])
         trade_dict['realized_pnl'] = float(trade_dict['realized_pnl'])
         trade_dict['trade_duration'] = int(trade_dict['trade_duration'])
@@ -654,8 +660,14 @@ class TradeStorage:
         # Convert strings to appropriate types
         trade_dict['entry_price'] = float(trade_dict['entry_price'])
         trade_dict['exit_price'] = float(trade_dict['exit_price']) if trade_dict.get('exit_price') else None
-        trade_dict['position_size'] = float(trade_dict['position_size'])
-        trade_dict['leverage'] = float(trade_dict['leverage'])
+        trade_dict['position_size'] = (
+            float(trade_dict['position_size'])
+            if trade_dict.get('position_size') is not None else None
+        )
+        trade_dict['leverage'] = (
+            float(trade_dict['leverage'])
+            if trade_dict.get('leverage') is not None else None
+        )
         trade_dict['floating_pnl'] = float(trade_dict.get('floating_pnl', 0.0))
         trade_dict['realized_pnl'] = float(trade_dict.get('realized_pnl', 0.0))
         trade_dict['trade_duration'] = int(trade_dict.get('trade_duration', 0))
@@ -694,4 +706,4 @@ class TradeStorage:
     
     def _round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
-        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        return round_finite(value, decimals) or 0.0

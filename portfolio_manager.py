@@ -9,11 +9,11 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
-from decimal import Decimal, ROUND_HALF_UP
 
 from configuration_manager import PortfolioConfig, TradingConfig
 from asset_manager import AssetManager, AssetState, Trade, TradeStatus
 from signal_engine import SignalResult
+from numeric_utils import round_finite
 
 class PortfolioEventType(Enum):
     """Portfolio event types"""
@@ -431,6 +431,4 @@ class PortfolioManager:
     
     def _round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
-        if not math.isfinite(float(value)):
-            return 0.0
-        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        return round_finite(value, decimals) or 0.0

@@ -86,7 +86,9 @@ class MarketAnalyzer:
         
         # Calculate price change
         price_change = current_price - previous_price
-        price_change_percent = ((price_change / previous_price) * 100) if previous_price > 0 else 0
+        price_change_percent = self._round_decimal(
+            ((price_change / previous_price) * 100) if previous_price > 0 else 0
+        )
         
         # Analyze different aspects
         trend_direction = self._analyze_trend(symbol, current_price)

@@ -113,14 +113,23 @@ class AssetState:
 class AssetManager:
     """Manages independent state for each asset"""
     
-    def __init__(self):
+    def __init__(self, initial_balance: float = 100.0):
+        if initial_balance < 0:
+            raise ValueError("initial_balance must be non-negative")
+        self.initial_balance = float(initial_balance)
         self.assets: Dict[str, AssetState] = {}
         self._initialize_assets()
     
     def _initialize_assets(self) -> None:
         """Initialize supported assets"""
-        for symbol in AssetSymbol:
-            self.assets[symbol.value] = AssetState(symbol=symbol.value)
+        symbols = list(AssetSymbol)
+        balance_per_asset = self.initial_balance / len(symbols) if symbols else 0.0
+        for symbol in symbols:
+            self.assets[symbol.value] = AssetState(
+                symbol=symbol.value,
+                balance=balance_per_asset,
+                equity=balance_per_asset,
+            )
     
     def get_asset_state(self, symbol: str) -> Optional[AssetState]:
         """Get state for a specific asset"""

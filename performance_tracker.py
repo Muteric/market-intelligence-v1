@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
-from decimal import Decimal, ROUND_HALF_UP
 import logging
 
 from asset_manager import AssetManager, Trade, TradeStatus
 from configuration_manager import PortfolioConfig
+from numeric_utils import round_finite
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +577,4 @@ class PerformanceTracker:
     
     def _round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
-        if not math.isfinite(float(value)):
-            return 0.0
-        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        return round_finite(value, decimals) or 0.0

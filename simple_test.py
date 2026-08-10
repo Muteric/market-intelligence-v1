@@ -5,6 +5,7 @@ Simple test to verify the AI Trading Intelligence Bot v2.0 system.
 
 import sys
 import os
+from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from configuration_manager import ConfigurationManager
@@ -40,7 +41,8 @@ def test_asset_manager():
     
     btc_asset = assets["BTCUSD"]
     assert btc_asset.symbol == "BTCUSD"
-    assert btc_asset.balance == 100.0
+    assert sum(asset.balance for asset in assets.values()) == 100.0
+    assert btc_asset.balance == 50.0
     assert len(btc_asset.open_positions) == 0
     print("✅ AssetManager test passed")
 
@@ -102,7 +104,7 @@ def test_signal_engine():
     )
     
     decision = signal_engine._determine_decision(market_analysis)
-    assert decision in ["STRONG BUY", "BUY", "HOLD", "SELL", "AVOID MARKET"]
+    assert decision.value in ["STRONG BUY", "BUY", "HOLD", "SELL", "AVOID MARKET"]
     print("✅ SignalEngine test passed")
 
 def test_portfolio_manager():
@@ -266,6 +268,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    # Import datetime here to avoid issues
-    from datetime import datetime, timezone
     exit(main())

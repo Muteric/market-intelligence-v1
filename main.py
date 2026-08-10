@@ -49,7 +49,7 @@ class AITradingIntelligenceBot:
         self.config = self.config_manager.get_config()
         
         # Initialize core components
-        self.asset_manager = AssetManager()
+        self.asset_manager = AssetManager(self.config.portfolio.initial_balance)
         self.market_analyzers: Dict[str, MarketAnalyzer] = {}
         self.signal_engine: Optional[SignalEngine] = None
         self.trade_manager: Optional[TradeManager] = None

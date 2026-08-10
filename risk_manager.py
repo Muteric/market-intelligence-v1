@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
-from decimal import Decimal, ROUND_HALF_UP
 
 from asset_manager import AssetManager, Trade, TradeStatus, PositionDirection
 from configuration_manager import PortfolioConfig, TradingConfig
+from numeric_utils import round_finite
 
 class RiskLevel(Enum):
     """Risk levels"""
@@ -98,8 +98,8 @@ class RiskManager:
         # Asset-specific risk limits
         for symbol in ["BTCUSD", "XAUUSD"]:
             self.add_risk_limit("MAX_POSITION_SIZE", symbol, 0.5)
-            self.add_risk_limit("STOP_LOSS_PCT", symbol, trading_config.stop_loss_percentage)
-            self.add_risk_limit("TAKE_PROFIT_PCT", symbol, trading_config.take_profit_percentage)
+            self.add_risk_limit("STOP_LOSS_PCT", symbol, self.trading_config.stop_loss_percentage)
+            self.add_risk_limit("TAKE_PROFIT_PCT", symbol, self.trading_config.take_profit_percentage)
     
     def add_risk_limit(self, risk_type: str, symbol: str, limit_value: float) -> RiskLimit:
         """Add a risk limit"""
@@ -497,4 +497,4 @@ class RiskManager:
     
     def _round_decimal(self, value: float, decimals: int = 2) -> float:
         """Round decimal value to specified precision"""
-        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+        return round_finite(value, decimals) or 0.0
