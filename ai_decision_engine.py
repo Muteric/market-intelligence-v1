@@ -64,6 +64,8 @@ class AIDecisionResult:
     historical_performance: Dict[str, Any]
     signal_accuracy: float
     ai_explanation: str
+    confidence_reasons: List[str] = None
+    pattern_evidence: Dict[str, Any] = None
 
 class AIDecisionEngine:
     """Enhanced AI decision engine with comprehensive market analysis"""
@@ -164,6 +166,13 @@ class AIDecisionEngine:
         
         # Get signal accuracy
         signal_accuracy = self.performance_tracker.get_signal_accuracy(symbol)
+        pattern_evidence = self._pattern_evidence(multi_timeframe)
+        if pattern_evidence["bullish"] and pattern_evidence["bearish"]:
+            confidence_explanation += "; conflicting chart-pattern evidence"
+        elif pattern_evidence["bullish"] and decision == SignalDecision.BUY.value:
+            confidence_explanation += "; confirmed bullish chart-pattern evidence"
+        elif pattern_evidence["bearish"] and decision == SignalDecision.SELL.value:
+            confidence_explanation += "; confirmed bearish chart-pattern evidence"
         
         return AIDecisionResult(
             symbol=symbol,
@@ -189,8 +198,23 @@ class AIDecisionEngine:
             open_trades=open_trades,
             historical_performance=historical_performance,
             signal_accuracy=signal_accuracy,
-            ai_explanation=ai_explanation
+            ai_explanation=ai_explanation,
+            confidence_reasons=[confidence_explanation],
+            pattern_evidence=pattern_evidence
         )
+
+    @staticmethod
+    def _pattern_evidence(multi_timeframe: MultiTimeframeResult) -> Dict[str, Any]:
+        patterns = getattr(multi_timeframe, "patterns", None) or {}
+        bullish, bearish = [], []
+        for timeframe_patterns in patterns.values():
+            for pattern in timeframe_patterns or []:
+                direction = pattern.get("direction") if isinstance(pattern, dict) else getattr(pattern, "direction", "")
+                if direction == "bullish":
+                    bullish.append(pattern)
+                elif direction == "bearish":
+                    bearish.append(pattern)
+        return {"bullish": bullish, "bearish": bearish, "count": len(bullish) + len(bearish)}
     
     def _calculate_consensus_price(self, symbol: str, current_price: float, previous_price: float) -> float:
         """Calculate consensus market price"""
@@ -437,6 +461,14 @@ class AIDecisionEngine:
         elif decision == SignalDecision.SELL.value:
             if technical_indicators.stochastic.oversold:
                 confidence -= 0.2
+
+        pattern_evidence = self._pattern_evidence(multi_timeframe)
+        if pattern_evidence["bullish"] and pattern_evidence["bearish"]:
+            confidence -= 0.10
+        elif (decision == SignalDecision.BUY.value and pattern_evidence["bullish"]) or (
+            decision == SignalDecision.SELL.value and pattern_evidence["bearish"]
+        ):
+            confidence += min(0.10, 0.03 * pattern_evidence["count"])
         
         # Ensure confidence is within bounds
         return max(0.0, min(1.0, confidence))

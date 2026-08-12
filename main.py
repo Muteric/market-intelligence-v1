@@ -245,6 +245,7 @@ class AITradingIntelligenceBot:
                 "provider_status": validation_result.provider_status or {},
                 "ohlcv_provider": validation_result.ohlcv_provider,
                 "ohlcv_candles": len(validation_result.ohlcv or []),
+                "execution_reference_price": validation_result.execution_reference_price,
             }
             logger.info("%s price validated", symbol)
 
@@ -363,11 +364,7 @@ class AITradingIntelligenceBot:
                 self._save_signal(signal_result)
             
             # Send enhanced Telegram reports
-            self._send_enhanced_reports(signal_results)
-            for symbol in unavailable_assets:
-                report = self._generate_data_unavailable_report(symbol)
-                self.last_reports[symbol] = report
-                self._send_telegram_message(report)
+            self._send_enhanced_reports(signal_results, unavailable_assets)
             
             # Update performance tracker
             self.performance_tracker.track_performance()
@@ -398,12 +395,15 @@ class AITradingIntelligenceBot:
     def _generate_data_unavailable_report(self, symbol: str) -> str:
         status = self.market_data_status.get(symbol, {})
         reason = status.get("reason", "No validated market data")
+        snapshot = self.market_snapshots.get(symbol)
+        current_price = getattr(snapshot, "consensus_price", None) if snapshot else None
+        price_line = f"Current Price: ${current_price:,.2f}\n" if current_price else "Current Price: DATA UNAVAILABLE\n"
         return (
-            "AI TRADING INTELLIGENCE BOT\n\n"
-            f"SIGNAL\nAsset: {symbol}\nDecision: DATA UNAVAILABLE\n"
-            "Tradeable signal: NO\n\n"
-            f"Reason: {reason}\n"
-            "No price, projected PnL, BUY, or SELL has been invented.\n"
+            f"{symbol}\nDecision: DATA UNAVAILABLE\nTradeable signal: NO\n"
+            + price_line
+            + "Technical Analysis: UNAVAILABLE\n"
+            + f"Reason: {reason}\n"
+            + "No price, projected PnL, BUY, or SELL has been invented."
         )
 
     def _save_signal(self, signal_result: SignalResult) -> None:
@@ -451,26 +451,48 @@ class AITradingIntelligenceBot:
         except Exception as e:
             logger.error(f"Error sending reports: {e}")
     
-    def _send_enhanced_reports(self, signal_results: Dict[str, SignalResult]) -> None:
-        """Send enhanced Telegram reports with comprehensive intelligence"""
+    def _send_enhanced_reports(self, signal_results: Dict[str, SignalResult], unavailable_assets: Optional[List[str]] = None) -> None:
+        """Send one consolidated normal-cycle intelligence report."""
         try:
-            # Send one verified intelligence report per analyzed asset.
+            parts = ["AI TRADING INTELLIGENCE BOT\n\nCONSOLIDATED ANALYSIS CYCLE"]
             for symbol, signal_result in signal_results.items():
-                enhanced_report = self._generate_enhanced_report(signal_result)
-                self._send_telegram_message(enhanced_report)
-                self.last_reports[symbol] = enhanced_report
-                logger.info("%s Telegram report sent", symbol)
-            
-            # Send enhanced portfolio report
-            portfolio_report = self._generate_enhanced_portfolio_report()
-            
-            # Send to Telegram (placeholder)
-            self._send_telegram_message(portfolio_report)
-            self.last_reports["PORTFOLIO"] = portfolio_report
-            
+                report = self._generate_enhanced_report(signal_result)
+                parts.append(report)
+                self.last_reports[symbol] = report
+            for symbol in unavailable_assets or []:
+                report = self._generate_data_unavailable_report(symbol)
+                parts.append(report)
+                self.last_reports[symbol] = report
+            parts.append(self._generate_enhanced_portfolio_report())
+            parts.append(self._generate_market_data_health_report())
+            consolidated = "\n\n--------------------\n\n".join(parts)
+            self._send_telegram_message(consolidated)
+            self.last_reports["CONSOLIDATED"] = consolidated
+            logger.info("Consolidated Telegram report sent")
         except Exception as e:
-            logger.error(f"Error sending enhanced reports: {e}")
-    
+            logger.error("Error sending consolidated reports: %s", e)
+
+    def _generate_market_data_health_report(self) -> str:
+        lines = ["SYSTEM HEALTH"]
+        valid = 0
+        for symbol in self.market_analyzers:
+            status = self.market_data_status.get(symbol, {})
+            candles = int(status.get("ohlcv_candles", 0) or 0)
+            has_price = bool(status.get("provider_prices"))
+            if candles >= 200:
+                state = "HEALTHY"; valid += 1
+                detail = "validated OHLCV available"
+            elif has_price:
+                state = "DEGRADED"; detail = "spot/current price only"
+            else:
+                state = "UNAVAILABLE"; detail = "no validated market data"
+            lines.append(f"{symbol} Data: {state} ({detail})")
+        engine = "HEALTHY" if valid == len(self.market_analyzers) else ("DEGRADED" if valid else "UNAVAILABLE")
+        lines.append(f"Market Data Engine: {engine}")
+        lines.append("Signal Engine: ACTIVE" if valid else "Signal Engine: WAITING FOR MARKET DATA")
+        lines.append("Database: CONNECTED")
+        return "\n".join(lines)
+
     def _generate_enhanced_report(self, signal_result: SignalResult) -> str:
         """Generate enhanced intelligence report for a symbol"""
         return self.telegram_formatter.format_signal_report(signal_result, ReportFormat.PROFESSIONAL)

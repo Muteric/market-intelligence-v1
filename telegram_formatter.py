@@ -218,6 +218,17 @@ class TelegramFormatter:
                 item = multi.timeframe_analyses.get(timeframe)
                 lines.append(f"{timeframe}: {value(item, 'trend')} / momentum {value(item, 'momentum')}")
             lines.append(f"Alignment: {alignment_count}/5 ({multi.trend_alignment})")
+            lines.extend(["", "CHART PATTERNS"])
+            for timeframe, patterns in (getattr(multi, "patterns", None) or {}).items():
+                for pattern in patterns or []:
+                    name = pattern.get("pattern_name", "Pattern")
+                    confidence = pattern.get("confidence", 0.0)
+                    confirmation = pattern.get("confirmation_status", "unavailable")
+                    lines.append(f"{timeframe}: {name} / {confidence:.0%} / {confirmation}")
+            lines.extend(["", "MARKET STRUCTURE"])
+            for timeframe, structure in (getattr(multi, "market_structure", None) or {}).items():
+                labels = " ".join(structure.get("labels", [])) or "none"
+                lines.append(f"{timeframe}: {labels} / {structure.get('overall', 'neutral')}")
         else:
             lines.append("DATA UNAVAILABLE")
 
@@ -227,6 +238,7 @@ class TelegramFormatter:
             f"Action: {ai.decision}",
             f"Recommendation: {ai.recommended_action}",
             f"Reference Entry: ${analysis.current_price:,.2f}",
+            f"Execution Reference: ${validation.execution_reference_price:,.2f}" if validation and validation.execution_reference_price is not None else "Execution Reference: UNAVAILABLE",
             f"Position Allocation: {allocation:.0%} of ${asset_state.balance if asset_state else 0.0:,.2f}",
             f"Leverage: 1:{self.portfolio_manager.portfolio_config.leverage:g}",
             f"Stop Loss: ${value(risk, 'stop_loss') if ai.decision != 'HOLD' else 'UNAVAILABLE'}",

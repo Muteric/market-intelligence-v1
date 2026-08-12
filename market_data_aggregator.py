@@ -61,6 +61,7 @@ class PriceValidationResult:
     provider_count: int = 0
     valid_provider_count: int = 0
     provider_status: Optional[Dict[str, str]] = None
+    execution_reference_price: Optional[float] = None
 
 class MarketDataAggregator:
     """Multi-source market data aggregation with price validation"""
@@ -133,10 +134,10 @@ class MarketDataAggregator:
         # Yahoo Finance API (community validation)
         self.providers['yahoo_finance'] = {
             'name': 'Yahoo Finance',
-            'base_url': 'https://query1.finance.yahoo.com/v8',
+            'base_url': 'https://query1.finance.yahoo.com/v7/finance',
             'endpoints': {
                 'quote': '/quote',
-                'chart': '/chart'
+                'chart': 'https://query1.finance.yahoo.com/v8/finance/chart'
             },
             'priority': 5,
             'weight': 0.6
@@ -521,9 +522,10 @@ class MarketDataAggregator:
     
     async def _fetch_twelvedata(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from Twelve Data API"""
+        provider_symbol = self._map_symbol_to_twelvedata(symbol)
         url = f"{provider['base_url']}{provider['endpoints']['quote']}"
         params = {
-            'symbol': symbol,
+            'symbol': provider_symbol,
             'apikey': self._get_api_key('twelvedata')
         }
         
@@ -535,12 +537,16 @@ class MarketDataAggregator:
         if 'code' in data and data['code'] != 200:
             return None
         
-        price_data = data.get('price', {})
+        price_data = data.get('price', data)
         
-        price = float(price_data.get('close', 0))
+        price = float(price_data.get('close') or price_data.get('price') or 0)
+        if price <= 0:
+            return None
         bid = float(price_data.get('bid', price * 0.999))
         ask = float(price_data.get('ask', price * 1.001))
         volume = float(price_data.get('volume', 0))
+        previous_price = price_data.get('previous_close') or price_data.get('previousClose')
+        ohlcv = self._fetch_twelvedata_ohlcv(provider, provider_symbol)
         
         spread = ask - bid
         
@@ -553,9 +559,23 @@ class MarketDataAggregator:
             volume=volume,
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
-            source='twelvedata'
+            source='twelvedata',
+            previous_price=previous_price,
+            ohlcv=ohlcv
         )
     
+    def _fetch_twelvedata_ohlcv(self, provider: Dict, symbol: str) -> Optional[List[Dict[str, float]]]:
+        response = requests.get(
+            f"{provider['base_url']}{provider['endpoints']['time_series']}",
+            params={'symbol': symbol, 'interval': '5min', 'outputsize': 1000,
+                    'apikey': self._get_api_key('twelvedata'), 'format': 'JSON'},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        values = data.get('values', []) if isinstance(data, dict) else []
+        return self._normalize_ohlcv(values, 'Twelve Data')
+
     async def _fetch_yahoo_finance(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from Yahoo Finance API"""
         # Map symbol to Yahoo Finance format
@@ -605,7 +625,7 @@ class MarketDataAggregator:
 
     def _fetch_yahoo_ohlcv(self, provider: Dict, symbol: str, headers: Dict) -> Optional[List[Dict[str, float]]]:
         """Fetch observed Yahoo candles; missing history is not synthesized."""
-        url = f"{provider['base_url']}{provider['endpoints']['chart']}/{quote(symbol)}"
+        url = f"{provider['endpoints']['chart']}/{quote(symbol)}"
         response = requests.get(
             url,
             params={"range": "5d", "interval": "5m", "events": "history"},
@@ -616,6 +636,41 @@ class MarketDataAggregator:
         result = response.json().get("chart", {}).get("result", [])
         if not result:
             return None
+        chart = result[0]
+        timestamps = chart.get('timestamp', [])
+        quote_data = (chart.get('indicators', {}).get('quote', [{}]) or [{}])[0]
+        candles = []
+        for index, timestamp in enumerate(timestamps):
+            values = {key: (quote_data.get(key) or [None] * len(timestamps))[index] for key in ('open', 'high', 'low', 'close', 'volume')}
+            if all(values[k] is not None for k in ('open','high','low','close')):
+                candles.append({'timestamp': datetime.fromtimestamp(float(timestamp), timezone.utc), **{k: float(v) for k,v in values.items() if v is not None}})
+        return candles or None
+
+    def _normalize_ohlcv(self, rows: Any, provider: str) -> Optional[List[Dict[str, float]]]:
+        if not isinstance(rows, list): return None
+        normalized = {}; rejected = 0
+        for row in rows:
+            try:
+                if not isinstance(row, dict): raise ValueError('row is not an object')
+                raw_time = row.get('timestamp', row.get('datetime', row.get('time', row.get('t'))))
+                if isinstance(raw_time, str): stamp = datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
+                else:
+                    value = float(raw_time)
+                    stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
+                if stamp.tzinfo is None: stamp = stamp.replace(tzinfo=timezone.utc)
+                values = {key: row.get(key, row.get(alias)) for key, alias in (('open','o'),('high','h'),('low','l'),('close','c'),('volume','v'))}
+                if any(values[k] is None for k in ('open','high','low','close')): raise ValueError('missing OHLC')
+                ohlc = {k: float(values[k]) for k in ('open','high','low','close')}; volume = float(values['volume'] or 0.0)
+                if not all(math.isfinite(x) for x in (*ohlc.values(), volume)): raise ValueError('non-finite value')
+                if min(ohlc.values()) <= 0 or ohlc['high'] < max(ohlc['open'], ohlc['close']) or ohlc['low'] > min(ohlc['open'], ohlc['close']): raise ValueError('invalid OHLC range')
+                normalized[stamp] = {'timestamp': stamp, **ohlc, 'volume': volume}
+            except (TypeError, ValueError, OverflowError): rejected += 1
+        candles = [normalized[k] for k in sorted(normalized)]
+        logger.info('%s OHLCV normalization: raw=%d valid=%d rejected=%d', provider, len(rows), len(candles), rejected)
+        return candles or None
+
+    def _map_symbol_to_twelvedata(self, symbol: str) -> str:
+        return {'BTCUSD': 'BTC/USD', 'XAUUSD': 'XAU/USD'}.get(symbol, symbol)
 
     def _provider_names_for_symbol(self, symbol: str) -> List[str]:
         if symbol != 'XAUUSD':
@@ -634,8 +689,8 @@ class MarketDataAggregator:
         }
         selected = [name.strip() for name in configured.split(',') if name.strip() in self.providers and enabled.get(name, True)]
         ordered = [name.strip() for name in priority.split(',') if name.strip() in selected]
-        return ordered + [name for name in selected if name not in ordered]
-        chart = result[0]
+        result = ordered + [name for name in selected if name not in ordered]
+        return list(dict.fromkeys(result))
         timestamps = chart.get("timestamp", [])
         quote_data = (chart.get("indicators", {}).get("quote", [{}]) or [{}])[0]
         candles = []
@@ -711,10 +766,7 @@ class MarketDataAggregator:
         }
         previous_price = float(median(previous_prices.values())) if previous_prices else None
         
-        ohlcv_provider = next(
-            (name for name, point in valid_data.items() if point.ohlcv),
-            None,
-        )
+        ohlcv_provider = max((name for name, point in valid_data.items() if point.ohlcv), key=lambda name: len(valid_data[name].ohlcv or []), default=None)
         ohlcv = valid_data[ohlcv_provider].ohlcv if ohlcv_provider else None
 
         return PriceValidationResult(
@@ -744,6 +796,7 @@ class MarketDataAggregator:
                 for name in self._provider_names_for_symbol(symbol)
                 if name not in provider_data
             },
+            execution_reference_price=prices.get("mt5"),
         )
     
     def _is_data_stale(self, data_point: MarketDataPoint) -> bool:

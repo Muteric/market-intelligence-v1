@@ -139,8 +139,8 @@ class ConfigurationManager:
         system = SystemConfig(
             telegram_token=_environment_value('TELEGRAM_TOKEN'),
             telegram_chat_id=_environment_value('TELEGRAM_CHAT_ID', '843487976'),
-            xauusd_data_providers=_environment_value('XAUUSD_DATA_PROVIDERS', 'goldprice_dev,goldapi,mt5,itick'),
-            xauusd_provider_priority=_environment_value('XAUUSD_PROVIDER_PRIORITY', 'goldprice_dev,mt5,goldapi,itick'),
+            xauusd_data_providers=_environment_value('XAUUSD_DATA_PROVIDERS', 'goldprice_dev,twelvedata,yahoo_finance,goldapi,mt5,itick'),
+            xauusd_provider_priority=_environment_value('XAUUSD_PROVIDER_PRIORITY', 'goldprice_dev,twelvedata,yahoo_finance,goldapi,mt5,itick'),
             goldapi_enabled=_environment_value('GOLDAPI_ENABLED', 'true').lower() == 'true',
             goldprice_dev_enabled=_environment_value('GOLDPRICEDEV_ENABLED', 'true').lower() == 'true',
             itick_enabled=_environment_value('ITICK_ENABLED', 'true').lower() == 'true',
@@ -207,6 +207,12 @@ class ConfigurationManager:
         )
         
         system_data = data.get('system', {})
+        configured_xau_providers = system_data.get('xauusd_data_providers', 'goldprice_dev,twelvedata,yahoo_finance,goldapi,mt5,itick')
+        configured_xau_priority = system_data.get('xauusd_provider_priority', 'goldprice_dev,twelvedata,yahoo_finance,goldapi,mt5,itick')
+        if configured_xau_providers == 'goldprice_dev,goldapi,mt5,itick':
+            configured_xau_providers = 'goldprice_dev,twelvedata,yahoo_finance,goldapi,mt5,itick'
+        if configured_xau_priority == 'goldprice_dev,mt5,goldapi,itick':
+            configured_xau_priority = 'goldprice_dev,twelvedata,yahoo_finance,goldapi,mt5,itick'
         system = SystemConfig(
             telegram_token=system_data.get('telegram_token', '') or _environment_value('TELEGRAM_TOKEN'),
             telegram_chat_id=system_data.get('telegram_chat_id', '') or _environment_value('TELEGRAM_CHAT_ID', '843487976'),
@@ -218,8 +224,8 @@ class ConfigurationManager:
             backup_enabled=system_data.get('backup_enabled', True),
             auto_recovery=system_data.get('auto_recovery', True),
             max_backup_files=int(system_data.get('max_backup_files', 10)),
-            xauusd_data_providers=system_data.get('xauusd_data_providers', 'goldprice_dev,goldapi,mt5,itick'),
-            xauusd_provider_priority=system_data.get('xauusd_provider_priority', 'goldprice_dev,mt5,goldapi,itick'),
+            xauusd_data_providers=configured_xau_providers,
+            xauusd_provider_priority=configured_xau_priority,
             goldapi_enabled=bool(system_data.get('goldapi_enabled', True)),
             goldapi_min_interval_seconds=int(system_data.get('goldapi_min_interval_seconds', 300)),
             goldprice_dev_enabled=bool(system_data.get('goldprice_dev_enabled', True)),

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from chart_pattern_detector import ChartPatternDetector
 
 class Timeframe(Enum):
     """Timeframe enumeration"""
@@ -29,6 +30,8 @@ class TimeframeAnalysis:
     momentum: float
     volume: float
     timestamp: datetime
+    patterns: List[Dict[str, Any]] = None
+    market_structure: Dict[str, Any] = None
 
 @dataclass
 class MultiTimeframeResult:
@@ -43,6 +46,8 @@ class MultiTimeframeResult:
     confidence_score: float
     key_levels: Dict[str, float]
     support_resistance: Dict[str, List[float]]
+    patterns: Dict[str, List[Dict[str, Any]]] = None
+    market_structure: Dict[str, Dict[str, Any]] = None
 
 class MultiTimeframeAnalyzer:
     """Multi-timeframe analysis for trading signals"""
@@ -52,6 +57,8 @@ class MultiTimeframeAnalyzer:
         self.timeframe_volumes: Dict[str, Dict[str, List[float]]] = {}
         self.timeframe_highs: Dict[str, Dict[str, List[float]]] = {}
         self.timeframe_lows: Dict[str, Dict[str, List[float]]] = {}
+        self.timeframe_candles: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+        self.pattern_detector = ChartPatternDetector()
     
     def update_timeframe_data(self, symbol: str, timeframe: str, price: float, 
                              volume: float, high: float = None, low: float = None) -> None:
@@ -61,12 +68,14 @@ class MultiTimeframeAnalyzer:
             self.timeframe_volumes[symbol] = {}
             self.timeframe_highs[symbol] = {}
             self.timeframe_lows[symbol] = {}
+            self.timeframe_candles[symbol] = {}
         
         if timeframe not in self.timeframe_data[symbol]:
             self.timeframe_data[symbol][timeframe] = []
             self.timeframe_volumes[symbol][timeframe] = []
             self.timeframe_highs[symbol][timeframe] = []
             self.timeframe_lows[symbol][timeframe] = []
+            self.timeframe_candles[symbol][timeframe] = []
         
         self.timeframe_data[symbol][timeframe].append(price)
         self.timeframe_volumes[symbol][timeframe].append(volume)
@@ -75,12 +84,17 @@ class MultiTimeframeAnalyzer:
             self.timeframe_highs[symbol][timeframe].append(high)
         if low is not None:
             self.timeframe_lows[symbol][timeframe].append(low)
+        self.timeframe_candles[symbol][timeframe].append({
+            "timestamp": datetime.now(timezone.utc), "open": price, "high": high if high is not None else price,
+            "low": low if low is not None else price, "close": price, "volume": volume,
+        })
         
         # Keep only recent data (last 100 points per timeframe)
         max_points = 100
         for key in [self.timeframe_data, self.timeframe_volumes, self.timeframe_highs, self.timeframe_lows]:
             if len(key[symbol][timeframe]) > max_points:
                 key[symbol][timeframe] = key[symbol][timeframe][-max_points:]
+        self.timeframe_candles[symbol][timeframe] = self.timeframe_candles[symbol][timeframe][-max_points:]
 
     def set_timeframe_ohlcv(self, symbol: str, timeframe: str,
                             candles: List[Dict[str, float]]) -> None:
@@ -96,6 +110,7 @@ class MultiTimeframeAnalyzer:
             if len(group) != factor:
                 continue
             bars.append({
+                "timestamp": group[-1].get("timestamp", datetime.now(timezone.utc)),
                 "close": float(group[-1]["close"]),
                 "volume": sum(float(item.get("volume", 0.0)) for item in group),
                 "high": max(float(item["high"]) for item in group),
@@ -113,6 +128,7 @@ class MultiTimeframeAnalyzer:
         self.timeframe_highs.setdefault(symbol, {})[timeframe] = [
             bar["high"] for bar in bars[-100:]
         ]
+        self.timeframe_candles.setdefault(symbol, {})[timeframe] = bars[-100:]
         self.timeframe_lows.setdefault(symbol, {})[timeframe] = [
             bar["low"] for bar in bars[-100:]
         ]
@@ -120,6 +136,8 @@ class MultiTimeframeAnalyzer:
     def analyze_multi_timeframe(self, symbol: str) -> MultiTimeframeResult:
         """Analyze multiple timeframes for a symbol"""
         timeframe_analyses = {}
+        pattern_map = {}
+        structure_map = {}
         
         for timeframe in Timeframe:
             tf_str = timeframe.value
@@ -127,6 +145,8 @@ class MultiTimeframeAnalyzer:
                 analysis = self._analyze_single_timeframe(symbol, tf_str)
                 if analysis:
                     timeframe_analyses[tf_str] = analysis
+                    pattern_map[tf_str] = analysis.patterns or []
+                    structure_map[tf_str] = analysis.market_structure or {}
         
         if not timeframe_analyses:
             raise ValueError(f"No timeframe data available for {symbol}")
@@ -153,6 +173,7 @@ class MultiTimeframeAnalyzer:
             confidence_score=confidence_score,
             key_levels=key_levels,
             support_resistance=support_resistance
+            , patterns=pattern_map, market_structure=structure_map
         )
     
     def _analyze_single_timeframe(self, symbol: str, timeframe: str) -> Optional[TimeframeAnalysis]:
@@ -188,6 +209,10 @@ class MultiTimeframeAnalyzer:
         
         # Get volume
         volume = volumes[-1] if volumes else 0.0
+        candle_rows = self.timeframe_candles.get(symbol, {}).get(timeframe, [])
+        pattern_analysis = self.pattern_detector.analyze(candle_rows, timeframe) if candle_rows else {
+            "patterns": [], "market_structure": {"overall": "neutral", "labels": []}
+        }
         
         return TimeframeAnalysis(
             timeframe=timeframe,
@@ -199,6 +224,7 @@ class MultiTimeframeAnalyzer:
             momentum=momentum,
             volume=volume,
             timestamp=datetime.now(timezone.utc)
+            , patterns=pattern_analysis.get("patterns", []), market_structure=pattern_analysis.get("market_structure", {})
         )
     
     def _determine_timeframe_trend(self, prices: List[float], timeframe: str) -> str:
