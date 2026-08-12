@@ -38,3 +38,30 @@ def test_empty_loss_set_has_finite_profit_factor():
     trade = Trade(asset="BTCUSD", entry_price=100, position_size=1, leverage=1, status="CLOSED", realized_pnl=5)
     metrics = calculator.calculate_portfolio_pnl([trade])
     assert metrics["profit_factor"] == 0.0
+
+import pytest
+
+
+def test_string_numeric_configuration_is_normalized():
+    config = SystemConfig(
+        xau_max_stale_seconds="60",
+        max_price_deviation_percent="1.5",
+        min_valid_providers="1",
+        notification_dedupe_seconds="900",
+    )
+    assert config.xau_max_stale_seconds == 60
+    assert isinstance(config.xau_max_stale_seconds, int)
+    assert config.max_price_deviation_percent == 1.5
+    assert config.min_valid_providers == 1
+
+
+def test_invalid_numeric_configuration_has_clear_error():
+    with pytest.raises(ValueError, match="MIN_CANDLES|xau_max_stale_seconds"):
+        SystemConfig(xau_max_stale_seconds="not-a-number")
+
+
+def test_numeric_string_provider_timestamp_is_normalized():
+    aggregator = MarketDataAggregator(system_config=SystemConfig())
+    point = aggregator._normalized_quote("XAUUSD", 4100, "fixture", "fixture", timestamp="1700000000")
+    assert point.timestamp.tzinfo is not None
+    assert point.timestamp.year == 2023

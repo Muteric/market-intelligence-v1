@@ -10,6 +10,33 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 
 
+def _coerce_int(name: str, value: Any) -> int:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Configuration error: {name} must be an integer, received {type(value).__name__}")
+
+
+def _coerce_float(name: str, value: Any) -> float:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Configuration error: {name} must be numeric, received {type(value).__name__}")
+
+
+def _coerce_bool(name: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes", "on"}:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(f"Configuration error: {name} must be boolean, received {type(value).__name__}")
+
 def _environment_value(name: str, default: str = "") -> str:
     """Read process environment first, then an optional local .env file."""
     value = os.getenv(name)
@@ -33,6 +60,13 @@ class PortfolioConfig:
     max_positions: int = 3
     max_open_positions: int = 3
 
+    def __post_init__(self) -> None:
+        self.initial_balance = _coerce_float("initial_balance", self.initial_balance)
+        self.base_position_size = _coerce_float("base_position_size", self.base_position_size)
+        self.scaling_position_size = _coerce_float("scaling_position_size", self.scaling_position_size)
+        self.leverage = _coerce_float("leverage", self.leverage)
+        self.max_positions = _coerce_int("max_positions", self.max_positions)
+        self.max_open_positions = _coerce_int("max_open_positions", self.max_open_positions)
 @dataclass
 class AssetConfig:
     """Asset-specific configuration"""
@@ -43,6 +77,12 @@ class AssetConfig:
     analysis_interval_minutes: int = 15
     allocation_percentage: Optional[float] = None
 
+    def __post_init__(self) -> None:
+        self.min_confidence = _coerce_float("min_confidence", self.min_confidence)
+        self.analysis_interval_minutes = _coerce_int("analysis_interval_minutes", self.analysis_interval_minutes)
+        if self.allocation_percentage is not None:
+            self.allocation_percentage = _coerce_float("allocation_percentage", self.allocation_percentage)
+        self.enabled = _coerce_bool("enabled", self.enabled)
 @dataclass
 class TradingConfig:
     """Trading configuration settings"""
@@ -55,6 +95,15 @@ class TradingConfig:
     trailing_stop_enabled: bool = True
     trailing_stop_percentage: float = 0.03  # 3%
 
+    def __post_init__(self) -> None:
+        self.confidence_change_threshold = _coerce_float("confidence_change_threshold", self.confidence_change_threshold)
+        self.max_daily_trades = _coerce_int("max_daily_trades", self.max_daily_trades)
+        self.max_weekly_trades = _coerce_int("max_weekly_trades", self.max_weekly_trades)
+        self.max_monthly_trades = _coerce_int("max_monthly_trades", self.max_monthly_trades)
+        self.stop_loss_percentage = _coerce_float("stop_loss_percentage", self.stop_loss_percentage)
+        self.take_profit_percentage = _coerce_float("take_profit_percentage", self.take_profit_percentage)
+        self.trailing_stop_percentage = _coerce_float("trailing_stop_percentage", self.trailing_stop_percentage)
+        self.trailing_stop_enabled = _coerce_bool("trailing_stop_enabled", self.trailing_stop_enabled)
 @dataclass
 class SystemConfig:
     """System-wide configuration"""
@@ -82,6 +131,15 @@ class SystemConfig:
     price_consensus_method: str = "median"
     execution_mode: str = "simulation"
     notification_dedupe_seconds: int = 900
+    def __post_init__(self) -> None:
+        self.max_backup_files = _coerce_int("max_backup_files", self.max_backup_files)
+        self.goldapi_min_interval_seconds = _coerce_int("goldapi_min_interval_seconds", self.goldapi_min_interval_seconds)
+        self.xau_max_stale_seconds = _coerce_int("xau_max_stale_seconds", self.xau_max_stale_seconds)
+        self.max_price_deviation_percent = _coerce_float("max_price_deviation_percent", self.max_price_deviation_percent)
+        self.min_valid_providers = _coerce_int("min_valid_providers", self.min_valid_providers)
+        self.notification_dedupe_seconds = _coerce_int("notification_dedupe_seconds", self.notification_dedupe_seconds)
+        for field in ("backup_enabled", "auto_recovery", "goldapi_enabled", "goldprice_dev_enabled", "itick_enabled", "mt5_enabled"):
+            setattr(self, field, _coerce_bool(field, getattr(self, field)))
 
 @dataclass
 class AppConfig:

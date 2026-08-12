@@ -274,7 +274,13 @@ class AITradingIntelligenceBot:
             
         except Exception as e:
             logger.error(f"Error fetching live market data for {symbol}: {e}")
-            self.market_data_status[symbol] = {"status": "unavailable", "reason": str(e)}
+            reason = str(e)
+            if "validation_result" in locals():
+                statuses = getattr(validation_result, "provider_status", {}) or {}
+                safe_status = ", ".join(f"{name}: {status}" for name, status in statuses.items())
+                if safe_status:
+                    reason = f"{reason}; providers: {safe_status}"
+            self.market_data_status[symbol] = {"status": "unavailable", "reason": reason}
             logger.warning("%s DATA UNAVAILABLE; skipping tradeable analysis", symbol)
             return None
     

@@ -259,8 +259,13 @@ class MarketDataAggregator:
                           ohlcv: Optional[List[Dict[str, float]]] = None) -> MarketDataPoint:
         value = float(price)
         stamp = timestamp or datetime.now(timezone.utc)
+        if isinstance(stamp, str):
+            try:
+                stamp = float(stamp)
+            except ValueError:
+                stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
         if isinstance(stamp, (int, float)):
-            stamp = datetime.fromtimestamp(float(stamp) / (1000 if stamp > 10**11 else 1), timezone.utc)
+            stamp = datetime.fromtimestamp(float(stamp) / (1000 if float(stamp) > 10**11 else 1), timezone.utc)
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
         bid_value = float(bid) if bid is not None else value
