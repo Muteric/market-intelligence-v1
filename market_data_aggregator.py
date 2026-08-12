@@ -956,14 +956,9 @@ class MarketDataAggregator:
 
     @staticmethod
     def _secret_value(name: Optional[str]) -> str:
-        aliases = {
-            'GOLD_API': ('GOLDAPI_KEY',),
-            'ALPHAVANTAGE_API_KEY': ('ALPHA_VANTAGE_API_KEY',),
-            'TWELVEDATA_API_KEY': ('TWELVE_DATA_API_KEY',),
-        }
         if not name:
             return ''
-        return os.getenv(name, '') or next((os.getenv(alias, '') for alias in aliases.get(name, ())), '')
+        return os.getenv(name, '')
 
     @classmethod
     def _secret_available(cls, name: Optional[str]) -> bool:

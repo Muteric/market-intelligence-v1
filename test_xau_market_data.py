@@ -68,7 +68,29 @@ def test_goldapi_normalizes_response_without_exposing_credentials(monkeypatch):
         return Response()
 
     monkeypatch.setattr("market_data_aggregator.requests.get", get)
-    monkeypatch.setenv("GOLDAPI_KEY", "test-only-key")
+    monkeypatch.setenv("GOLD_API", "test-only-key")
     result = asyncio.run(aggregator._fetch_goldapi(aggregator.providers["goldapi"], "XAUUSD"))
     assert result.price == 4115.2
     assert captured["headers"]["x-access-token"] == "test-only-key"
+
+
+def test_goldapi_missing_canonical_credential_is_unavailable(monkeypatch):
+    aggregator = MarketDataAggregator(system_config=SystemConfig())
+    monkeypatch.delenv("GOLD_API", raising=False)
+    result = asyncio.run(aggregator._fetch_from_provider("goldapi", "XAUUSD"))
+    assert result is None
+
+
+def test_xau_all_providers_unavailable_is_data_unavailable(monkeypatch):
+    aggregator = MarketDataAggregator(system_config=SystemConfig())
+
+    async def unavailable(name, symbol):
+        return None
+
+    monkeypatch.setattr(aggregator, "_fetch_from_provider", unavailable)
+    try:
+        asyncio.run(aggregator.fetch_market_data("XAUUSD"))
+    except ValueError as error:
+        assert "DATA UNAVAILABLE" in str(error)
+    else:
+        raise AssertionError("XAUUSD must not produce a signal without provider data")
