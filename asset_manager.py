@@ -315,7 +315,7 @@ class AssetManager:
             # Calculate profit factor
             total_profit = sum(t.realized_pnl for t in winning_trades)
             total_loss = abs(sum(t.realized_pnl for t in losing_trades))
-            stats['profit_factor'] = (total_profit / total_loss) if total_loss > 0 else float('inf')
+            stats['profit_factor'] = (total_profit / total_loss) if total_loss > 0 else 0.0
             
             # Calculate average winner/loser
             stats['average_winner'] = (total_profit / len(winning_trades)) if winning_trades else 0

@@ -40,6 +40,7 @@ class MarketDataPoint:
     status: str = "valid"
     previous_price: Optional[float] = None
     ohlcv: Optional[List[Dict[str, float]]] = None
+    data_kind: str = 'spot_only'
     
 @dataclass
 class PriceValidationResult:
@@ -121,7 +122,7 @@ class MarketDataAggregator:
         # Twelve Data API (BTCUSD, XAUUSD, technical indicators)
         self.providers['twelvedata'] = {
             'name': 'Twelve Data',
-            'base_url': 'https://api.twelvedata.com/v1',
+            'base_url': 'https://api.twelvedata.com',
             'endpoints': {
                 'time_series': '/time_series',
                 'quote': '/quote'
@@ -134,10 +135,10 @@ class MarketDataAggregator:
         # Yahoo Finance API (community validation)
         self.providers['yahoo_finance'] = {
             'name': 'Yahoo Finance',
-            'base_url': 'https://query1.finance.yahoo.com/v7/finance',
+            'base_url': 'https://query1.finance.yahoo.com',
             'endpoints': {
-                'quote': '/quote',
-                'chart': 'https://query1.finance.yahoo.com/v8/finance/chart'
+                'quote': '/v7/finance/quote',
+                'chart': '/v8/finance/chart'
             },
             'priority': 5,
             'weight': 0.6
@@ -270,6 +271,7 @@ class MarketDataAggregator:
             timestamp=stamp, provider=provider, source=source,
             previous_price=float(previous_price) if previous_price is not None else None,
             ohlcv=ohlcv,
+            data_kind='ohlcv' if ohlcv else 'spot_only',
         )
 
     async def _fetch_goldapi(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
@@ -502,9 +504,10 @@ class MarketDataAggregator:
         quote = data['Global Quote']
         
         price = float(quote['05. price'])
-        bid = float(quote['06. bid price']) if quote['06. bid price'] != '0.0' else price * 0.999
-        ask = float(quote['07. ask price']) if quote['07. ask price'] != '0.0' else price * 1.001
-        volume = float(quote['06. volume']) if quote['06. volume'] != '0.0' else 0.0
+        volume = float(quote.get('06. volume') or 0.0)
+        bid = float(quote.get('08. bid price') or price * 0.999)
+        ask = float(quote.get('09. ask price') or price * 1.001)
+        ohlcv = self._fetch_alphavantage_ohlcv(provider, symbol)
         
         spread = ask - bid
         
@@ -517,9 +520,29 @@ class MarketDataAggregator:
             volume=volume,
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
-            source='alphavantage'
+            source='alphavantage',
+            ohlcv=ohlcv,
+            data_kind='ohlcv' if ohlcv else 'spot_only',
         )
     
+    def _fetch_alphavantage_ohlcv(self, provider: Dict, symbol: str) -> Optional[List[Dict[str, float]]]:
+        if symbol == 'XAUUSD':
+            params = {'function': 'FX_INTRADAY', 'from_symbol': 'XAU', 'to_symbol': 'USD', 'interval': '5min', 'outputsize': 'full'}
+            series_name = 'Time Series FX (5min)'
+        elif symbol == 'BTCUSD':
+            params = {'function': 'DIGITAL_CURRENCY_INTRADAY', 'symbol': 'BTC', 'market': 'USD', 'interval': '5min', 'outputsize': 'full'}
+            series_name = 'Time Series Crypto (5min)'
+        else:
+            return None
+        params['apikey'] = self._get_api_key('alphavantage')
+        response = requests.get(provider['base_url'], params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        rows = []
+        for timestamp, values in (data.get(series_name) or {}).items():
+            rows.append({'timestamp': timestamp, 'open': values.get('1. open'), 'high': values.get('2. high'), 'low': values.get('3. low'), 'close': values.get('4. close'), 'volume': values.get('5. volume') or 0})
+        return self._normalize_ohlcv(rows, 'Alpha Vantage')
+
     async def _fetch_twelvedata(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from Twelve Data API"""
         provider_symbol = self._map_symbol_to_twelvedata(symbol)
@@ -561,7 +584,8 @@ class MarketDataAggregator:
             provider=provider['name'],
             source='twelvedata',
             previous_price=previous_price,
-            ohlcv=ohlcv
+            ohlcv=ohlcv,
+            data_kind='ohlcv' if ohlcv else 'spot_only'
         )
     
     def _fetch_twelvedata_ohlcv(self, provider: Dict, symbol: str) -> Optional[List[Dict[str, float]]]:
@@ -625,7 +649,7 @@ class MarketDataAggregator:
 
     def _fetch_yahoo_ohlcv(self, provider: Dict, symbol: str, headers: Dict) -> Optional[List[Dict[str, float]]]:
         """Fetch observed Yahoo candles; missing history is not synthesized."""
-        url = f"{provider['endpoints']['chart']}/{quote(symbol)}"
+        url = f"{provider['base_url']}{provider['endpoints']['chart']}/{quote(symbol)}"
         response = requests.get(
             url,
             params={"range": "5d", "interval": "5m", "events": "history"},
@@ -787,7 +811,7 @@ class MarketDataAggregator:
             provider_count=len(self._provider_names_for_symbol(symbol)),
             valid_provider_count=len(valid_data),
             provider_status={
-                name: ('valid' if name in valid_data else 'stale' if name in stale_providers
+                name: ('valid_ohlcv' if name in valid_data and valid_data[name].ohlcv else 'valid_spot_only' if name in valid_data else 'stale' if name in stale_providers
                        else 'outlier' if name in outlier_providers else 'invalid')
                 for name in self._provider_names_for_symbol(symbol)
                 if name in provider_data

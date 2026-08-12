@@ -565,11 +565,25 @@ class AITradingIntelligenceBot:
                 if success:
                     self._telegram_message_times[digest] = now
                 return success
-        except Exception:
+        except Exception as error:
             self.telegram_delivery_failures += 1
-            logger.exception("Telegram delivery failed")
+            logger.error("Telegram delivery failed (status=%s); credential value suppressed", getattr(error, "code", "unavailable"))
             return False
     
+    def get_telegram_diagnostic(self) -> Dict[str, str]:
+        """Return safe Telegram configuration/API status without sending a message."""
+        token = self.config.system.telegram_token or os.getenv("TELEGRAM_TOKEN", "")
+        chat_id = self.config.system.telegram_chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            return {"configured": "NO", "api_reachable": "NO", "authentication_accepted": "NO", "message_delivery": "NO"}
+        try:
+            req = request.Request(f"https://api.telegram.org/bot{token}/getMe", method="GET")
+            with request.urlopen(req, timeout=10) as response:
+                accepted = 200 <= response.status < 300
+            return {"configured": "YES", "api_reachable": "YES", "authentication_accepted": "YES" if accepted else "NO", "message_delivery": "NOT_TESTED"}
+        except Exception as error:
+            logger.error("Telegram diagnostic failed (status=%s); credential value suppressed", getattr(error, "code", "unavailable"))
+            return {"configured": "YES", "api_reachable": "NO", "authentication_accepted": "NO", "message_delivery": "NOT_TESTED"}
     def run_continuous(self, interval_minutes: int = 15) -> None:
         """Run the bot continuously"""
         logger.info(f"Starting continuous operation with {interval_minutes} minute intervals")

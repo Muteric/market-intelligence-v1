@@ -133,7 +133,7 @@ class PortfolioManager:
         # Calculate profit factor
         total_profit = sum(t.realized_pnl for t in winning_trades)
         total_loss = abs(sum(t.realized_pnl for t in losing_trades))
-        profit_factor = (total_profit / total_loss) if total_loss > 0 else float('inf')
+        profit_factor = (total_profit / total_loss) if total_loss > 0 else 0.0
         
         # Calculate average winner/loser
         average_winner = (total_profit / winning_count) if winning_count > 0 else 0.0
@@ -289,7 +289,7 @@ class PortfolioManager:
                 'profit_factor': self._round_decimal(
                     (sum(t.get('realized_pnl', 0) for t in winning_trades) / 
                      abs(sum(t.get('realized_pnl', 0) for t in losing_trades)))
-                    if sum(t.get('realized_pnl', 0) for t in losing_trades) != 0 else float('inf')
+                    if sum(t.get('realized_pnl', 0) for t in losing_trades) != 0 else 0.0
                 )
             }
         
