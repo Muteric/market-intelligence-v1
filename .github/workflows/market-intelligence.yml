@@ -80,7 +80,14 @@ jobs:
         run: python github_provider_diagnostics.py --send-telegram
 
       - name: Run market intelligence
-        run: python main.py
+        shell: bash
+        run: |
+          set -o pipefail
+          python main.py 2>&1 | tee main-production.log
+          if grep -Eq "INTERNAL_ERROR|CONFIGURATION_ERROR" main-production.log; then
+            echo "Production scan failed due to an internal/configuration error"
+            exit 1
+          fi
 
       - name: Persist alert memory
         run: |
