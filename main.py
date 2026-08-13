@@ -272,9 +272,26 @@ class AITradingIntelligenceBot:
             
             return validation_result.consensus_price, previous_price
             
-        except Exception as e:
-            logger.error(f"Error fetching live market data for {symbol}: {e}")
+        except TypeError as e:
+            logger.exception("%s INTERNAL_ERROR during production market-data path: %s", symbol, e)
+            reason = "internal market-data type error; see GitHub Actions traceback"
+            self.market_data_status[symbol] = {
+                "status": "internal_error", "classification": "INTERNAL_ERROR", "reason": reason
+            }
+            logger.warning("%s DATA UNAVAILABLE due to INTERNAL_ERROR; no signal generated", symbol)
+            return None
+        except ValueError as e:
             reason = str(e)
+            if reason.startswith("Configuration error:"):
+                logger.exception("%s CONFIGURATION_ERROR in production market-data path: %s", symbol, e)
+                self.market_data_status[symbol] = {
+                    "status": "configuration_error",
+                    "classification": "CONFIGURATION_ERROR",
+                    "reason": reason,
+                }
+                logger.warning("%s DATA UNAVAILABLE due to CONFIGURATION_ERROR; no signal generated", symbol)
+                return None
+            logger.error("%s market-data validation unavailable: %s", symbol, e)
             if "validation_result" in locals():
                 statuses = getattr(validation_result, "provider_status", {}) or {}
                 safe_status = ", ".join(f"{name}: {status}" for name, status in statuses.items())
@@ -356,8 +373,17 @@ class AITradingIntelligenceBot:
                     signal_result.risk_metrics = ai_decision.risk_metrics
                     signal_result.portfolio_metrics = self.portfolio_manager.update_portfolio()
                     signal_result.data_quality = self.market_data_status.get(symbol, {})
+                except TypeError as exc:
+                    logger.exception("%s INTERNAL_ERROR during technical/decision path: %s", symbol, exc)
+                    self.market_data_status[symbol] = {
+                        "status": "internal_error",
+                        "classification": "INTERNAL_ERROR",
+                        "reason": "internal analysis type error; see GitHub Actions traceback",
+                    }
+                    unavailable_assets.append(symbol)
+                    continue
                 except Exception as exc:
-                    logger.error("%s analysis unavailable: %s", symbol, exc)
+                    logger.exception("%s analysis unavailable: %s", symbol, exc)
                     self.market_data_status[symbol] = {"status": "unavailable", "reason": str(exc)}
                     unavailable_assets.append(symbol)
                     continue

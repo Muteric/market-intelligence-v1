@@ -203,6 +203,17 @@ class MarketDataAggregator:
         
         return validation_result
     
+    @staticmethod
+    def _numeric_config(config: Any, name: str, default: Any, caster: Any) -> Any:
+        raw = getattr(config, name, default) if config is not None else default
+        try:
+            if isinstance(raw, bool):
+                raise ValueError
+            return caster(raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Configuration error: {name} must be {caster.__name__}, received {type(raw).__name__}"
+            )
     async def _fetch_from_provider(self, provider_name: str, symbol: str) -> Optional[MarketDataPoint]:
         """Fetch data from a specific provider"""
         if requests is None and provider_name != 'mt5':
@@ -216,7 +227,7 @@ class MarketDataAggregator:
         cached = self.provider_cache.get((symbol, provider_name))
         if cached is not None and provider_name == 'goldapi':
             age = (datetime.now(timezone.utc) - cached.timestamp).total_seconds()
-            interval = getattr(self.system_config, 'goldapi_min_interval_seconds', 300)
+            interval = self._numeric_config(self.system_config, 'goldapi_min_interval_seconds', 300, int)
             if age < interval:
                 logger.info('Using cached GoldAPI result for %s (age %.0fs)', symbol, age)
                 return cached
@@ -682,7 +693,13 @@ class MarketDataAggregator:
             try:
                 if not isinstance(row, dict): raise ValueError('row is not an object')
                 raw_time = row.get('timestamp', row.get('datetime', row.get('time', row.get('t'))))
-                if isinstance(raw_time, str): stamp = datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
+                if isinstance(raw_time, str):
+                    try:
+                        value = float(raw_time)
+                    except ValueError:
+                        stamp = datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
+                    else:
+                        stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
                 else:
                     value = float(raw_time)
                     stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
@@ -831,7 +848,7 @@ class MarketDataAggregator:
     def _is_data_stale(self, data_point: MarketDataPoint) -> bool:
         """Check if data is stale (older than 1 minute)"""
         age = datetime.now(timezone.utc) - data_point.timestamp
-        threshold = getattr(self.system_config, 'xau_max_stale_seconds', 60) if data_point.symbol == 'XAUUSD' else 60
+        threshold = self._numeric_config(self.system_config, 'xau_max_stale_seconds', 60, int) if data_point.symbol == 'XAUUSD' else 60
         return age.total_seconds() > threshold
     
     def _is_outlier(self, data_point: MarketDataPoint, prices: Dict[str, float]) -> bool:
@@ -840,7 +857,7 @@ class MarketDataAggregator:
             return False
         
         current_price = data_point.price
-        max_deviation = getattr(self.system_config, 'max_price_deviation_percent', 1.0)
+        max_deviation = self._numeric_config(self.system_config, 'max_price_deviation_percent', 1.0, float)
         reference = float(median(prices.values()))
         if reference > 0 and abs(current_price - reference) / reference * 100 > max_deviation:
             return True

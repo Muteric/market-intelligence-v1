@@ -81,3 +81,40 @@ def test_runtime_configuration_updates_are_coerced_before_comparison(tmp_path):
     assert system.xau_max_stale_seconds == 60
     assert isinstance(system.xau_max_stale_seconds, int)
     assert system.max_price_deviation_percent == 1.5
+
+def test_market_data_numeric_boundaries_accept_string_inputs():
+    from types import SimpleNamespace
+
+    aggregator = MarketDataAggregator(system_config=SimpleNamespace(
+        goldapi_min_interval_seconds="300",
+        xau_max_stale_seconds="60",
+        max_price_deviation_percent="1.5",
+    ))
+    assert aggregator._numeric_config(aggregator.system_config, "goldapi_min_interval_seconds", 300, int) == 300
+    assert aggregator._numeric_config(aggregator.system_config, "xau_max_stale_seconds", 60, int) == 60
+    assert aggregator._numeric_config(aggregator.system_config, "max_price_deviation_percent", 1.0, float) == 1.5
+
+    candles = aggregator._normalize_ohlcv([{
+        "timestamp": "1700000000000",
+        "open": "10",
+        "high": "12",
+        "low": "9",
+        "close": "11",
+        "volume": "4",
+    }], "fixture")
+    assert candles is not None
+    assert candles[0]["timestamp"].year == 2023
+    assert candles[0]["close"] == 11.0
+
+
+def test_market_data_numeric_configuration_rejects_invalid_strings():
+    from types import SimpleNamespace
+    import pytest
+
+    aggregator = MarketDataAggregator(system_config=SimpleNamespace(
+        max_price_deviation_percent="not-a-number",
+    ))
+    with pytest.raises(ValueError, match="max_price_deviation_percent"):
+        aggregator._numeric_config(
+            aggregator.system_config, "max_price_deviation_percent", 1.0, float
+        )

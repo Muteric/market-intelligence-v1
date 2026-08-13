@@ -28,6 +28,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Record deployed commit and configuration types
+        run: |
+          git rev-parse HEAD
+          git status --short
+          python configuration_type_diagnostics.py
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
