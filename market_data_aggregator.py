@@ -584,7 +584,7 @@ class MarketDataAggregator:
         bid = float(price_data.get('bid', price * 0.999))
         ask = float(price_data.get('ask', price * 1.001))
         volume = float(price_data.get('volume', 0))
-        previous_price = price_data.get('previous_close') or price_data.get('previousClose')
+        previous_raw = price_data.get('previous_close') or price_data.get('previousClose')
         ohlcv = self._fetch_twelvedata_ohlcv(provider, provider_symbol)
         
         spread = ask - bid
@@ -599,7 +599,7 @@ class MarketDataAggregator:
             timestamp=datetime.now(timezone.utc),
             provider=provider['name'],
             source='twelvedata',
-            previous_price=previous_price,
+            previous_price=float(previous_raw) if previous_raw is not None else None,
             ohlcv=ohlcv,
             data_kind='ohlcv' if ohlcv else 'spot_only'
         )
@@ -806,10 +806,17 @@ class MarketDataAggregator:
         confidence_score = self._calculate_validation_confidence(
             valid_data, outlier_providers, len(self._provider_names_for_symbol(symbol))
         )
-        previous_prices = {
-            name: data.previous_price for name, data in valid_data.items()
-            if data.previous_price is not None and math.isfinite(float(data.previous_price)) and data.previous_price > 0
-        }
+        previous_prices = {}
+        for name, data in valid_data.items():
+            if data.previous_price is None:
+                continue
+            try:
+                previous_numeric = float(data.previous_price)
+            except (TypeError, ValueError):
+                logger.warning("Ignoring non-numeric previous price from %s for %s", name, symbol)
+                continue
+            if math.isfinite(previous_numeric) and previous_numeric > 0:
+                previous_prices[name] = previous_numeric
         previous_price = float(median(previous_prices.values())) if previous_prices else None
         
         ohlcv_provider = max((name for name, point in valid_data.items() if point.ohlcv), key=lambda name: len(valid_data[name].ohlcv or []), default=None)

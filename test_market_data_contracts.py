@@ -118,3 +118,26 @@ def test_market_data_numeric_configuration_rejects_invalid_strings():
         aggregator._numeric_config(
             aggregator.system_config, "max_price_deviation_percent", 1.0, float
         )
+
+def test_previous_price_string_does_not_reach_string_integer_comparison():
+    from types import SimpleNamespace
+
+    now = datetime.now(timezone.utc)
+    aggregator = MarketDataAggregator(system_config=SimpleNamespace(
+        price_consensus_method="median",
+        max_price_deviation_percent=1.0,
+    ))
+    point = MarketDataPoint(
+        symbol="BTCUSD",
+        price=110.0,
+        bid=109.0,
+        ask=111.0,
+        spread=2.0,
+        volume=1.0,
+        timestamp=now,
+        provider="Twelve Data",
+        source="twelvedata",
+        previous_price="100.0",
+    )
+    result = aggregator._validate_and_consensus("BTCUSD", {"twelvedata": point})
+    assert result.previous_price == 100.0
