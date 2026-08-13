@@ -44,8 +44,23 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall .
 
-      - name: Validate Telegram configuration
+      - name: Validate configured secrets
+        shell: bash
         run: |
+          check_secret() {
+            local name="$1"
+            if [ -n "${!name:-}" ]; then
+              echo "$name: CONFIGURED"
+            else
+              echo "$name: NOT CONFIGURED"
+            fi
+          }
+          check_secret ALPHAVANTAGE_API_KEY
+          check_secret COIN_GECKO_API
+          check_secret GOLD_API
+          check_secret ITICK_API_KEY
+          check_secret TELEGRAM_TOKEN
+          check_secret TWELVEDATA_API_KEY
           test -n "$TELEGRAM_TOKEN"
           test -n "$TELEGRAM_CHAT_ID"
 
@@ -54,6 +69,9 @@ jobs:
 
       - name: Run deterministic integration harness
         run: python test_system.py
+
+      - name: Run sanitized provider health diagnostics
+        run: python github_provider_diagnostics.py --send-telegram
 
       - name: Run market intelligence
         run: python main.py

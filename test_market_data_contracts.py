@@ -65,3 +65,19 @@ def test_numeric_string_provider_timestamp_is_normalized():
     point = aggregator._normalized_quote("XAUUSD", 4100, "fixture", "fixture", timestamp="1700000000")
     assert point.timestamp.tzinfo is not None
     assert point.timestamp.year == 2023
+
+
+def test_runtime_configuration_updates_are_coerced_before_comparison(tmp_path):
+    from configuration_manager import ConfigurationManager
+
+    manager = ConfigurationManager(str(tmp_path / "config.json"))
+    manager.update_config({
+        "system": {
+            "xau_max_stale_seconds": "60",
+            "max_price_deviation_percent": "1.5",
+        }
+    })
+    system = manager.get_system_config()
+    assert system.xau_max_stale_seconds == 60
+    assert isinstance(system.xau_max_stale_seconds, int)
+    assert system.max_price_deviation_percent == 1.5

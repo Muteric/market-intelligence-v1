@@ -351,6 +351,12 @@ class ConfigurationManager:
             for key, value in updates['system'].items():
                 setattr(self._config.system, key, value)
         
+        # Re-apply dataclass boundary coercion after dictionary updates.
+        self._config.portfolio.__post_init__()
+        for asset in self._config.assets.values():
+            asset.__post_init__()
+        self._config.trading.__post_init__()
+        self._config.system.__post_init__()
         self._save_config()
     
     def get_asset_config(self, symbol: str) -> AssetConfig:
