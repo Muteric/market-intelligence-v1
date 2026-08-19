@@ -1,8 +1,9 @@
 ﻿from datetime import datetime, timezone, timedelta
 
 from signal_intelligence import (
-    DEFAULT_PIP_SPECS, SimulationMode, TrailingStopManager,
-    build_trade_candidate, calculate_signal_score, SignalOutcomeTracker,
+    SimulationMode, TrailingStopManager,
+    build_trade_candidate, calculate_signal_score, SignalOutcomeTracker, infer_candidate_direction,
+    DEFAULT_PIP_SPECS,
 )
 from technical_indicators import TechnicalIndicators
 
@@ -45,3 +46,34 @@ def test_outcome_tracker_records_and_resolves(tmp_path):
     tracker.resolve(record_id, [100.0, 110.0, 120.0], DEFAULT_PIP_SPECS["BTCUSD"])
     assert tracker.learning_status()["candidates_evaluated"] == 1
     assert tracker.learning_status()["outcomes_resolved"] == 1
+import pytest
+
+@pytest.mark.parametrize("asset", ["BTCUSD", "XAUUSD"])
+def test_valid_evidence_produces_candidate_even_when_final_decision_is_hold(asset):
+    direction = infer_candidate_direction("bullish", "bullish", "bullish", 0.8)
+    score = calculate_signal_score(direction, trend="bullish", structure_direction="bullish", pattern_direction="bullish", momentum=0.8, mtf_alignment=0.8, ohlcv_confidence=1.0, spot_consensus=1.0, provider_diversity=1.0)
+    candidate = build_trade_candidate(asset, direction, 100.0, score, min_score=65, min_confirmations=3)
+    assert candidate.status == "BUY"
+    assert candidate.entry == 100.0
+    assert candidate.accepted
+
+
+def test_weak_and_conflicting_setups_are_rejected_or_watched():
+    weak = calculate_signal_score("WATCH", trend="neutral", momentum=0.0, mtf_alignment=0.2)
+    weak_candidate = build_trade_candidate("BTCUSD", "WATCH", 100.0, weak, min_score=90, min_confirmations=4)
+    assert weak_candidate.status in {"WATCH", "NO-TRADE"}
+    conflicting = calculate_signal_score("BUY", trend="bullish", structure_direction="bearish", pattern_direction="bearish", mtf_alignment=0.8)
+    conflict_candidate = build_trade_candidate("XAUUSD", "BUY", 100.0, conflicting, structure_confirmed=False)
+    assert "conflicting market structure" in conflict_candidate.rejection_reason
+
+
+def test_candidate_lifecycle_records_trailing_and_outcome(tmp_path):
+    score = calculate_signal_score("BUY", trend="bullish", structure_direction="bullish", mtf_alignment=1.0)
+    candidate = build_trade_candidate("BTCUSD", "BUY", 100.0, score, min_confirmations=2)
+    tracker = SignalOutcomeTracker(str(tmp_path / "lifecycle.json"))
+    record_id = tracker.record(candidate, {"market_regime": "TRENDING", "mtf_alignment": "5/5"})
+    assert tracker.open_candidate(record_id)["lifecycle_state"] == "OPEN"
+    tracker.update_trailing(record_id, 125.0, DEFAULT_PIP_SPECS["BTCUSD"])
+    closed = tracker.close_candidate(record_id, 130.0, DEFAULT_PIP_SPECS["BTCUSD"], "take profit")
+    assert closed["lifecycle_state"] == "CLOSED"
+    assert closed["outcome"] == "WIN"

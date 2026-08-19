@@ -1,4 +1,4 @@
-﻿"""
+"""
 Telegram Formatter for AI Trading Intelligence Bot
 Generates professional-grade Telegram reports for trading signals and portfolio performance.
 """
@@ -236,8 +236,11 @@ class TelegramFormatter:
         if candidate and getattr(candidate, "accepted", False):
             lines.extend([
                 "",
-                "TRADE CANDIDATE (SIMULATION ONLY)",
+                "SIGNAL INTELLIGENCE (SIMULATION ONLY)",
+                f"DIRECTION: {candidate.direction}",
                 f"MODE: {candidate.mode}",
+                f"SCORE: {candidate.signal_score:.1f}",
+                f"STATUS: {candidate.status}",
                 f"DIRECTION: {candidate.direction}",
                 f"ENTRY: {candidate.entry}",
                 f"STOP LOSS: {candidate.stop_loss}",
@@ -247,6 +250,17 @@ class TelegramFormatter:
                 f"CONFIDENCE: {candidate.confidence:.0%}",
                 f"TIMEFRAME ALIGNMENT: {', '.join(candidate.supporting_timeframes) or 'UNAVAILABLE'}",
                 f"WHY: {'; '.join(candidate.reasons) or 'UNAVAILABLE'}",
+            ])
+        elif candidate and getattr(candidate, "status", "") == "WATCH":
+            lines.extend([
+                "",
+                "TRADE CANDIDATE: WATCH",
+                f"Direction: {candidate.direction}",
+                f"Mode: {candidate.mode}",
+                f"Score: {candidate.signal_score:.1f}%",
+                f"Confidence: {candidate.confidence:.0%}",
+                f"Entry: {candidate.entry}",
+                f"Reason: {candidate.rejection_reason or 'WATCH — setup developing'}",
             ])
         elif candidate and getattr(candidate, "rejection_reason", None):
             lines.extend(["", "TRADE CANDIDATE: REJECTED", f"Reason: {candidate.rejection_reason}"])

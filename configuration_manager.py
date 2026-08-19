@@ -1,4 +1,4 @@
-﻿"""
+"""
 Configuration Manager for AI Trading Intelligence Bot
 Handles all configurable settings including portfolio parameters, trading rules, and asset configurations.
 """
@@ -140,6 +140,15 @@ class SystemConfig:
     simulation_stop_loss_pips: float = 50.0
     trailing_activation_pips: float = 20.0
     trailing_step_pips: float = 10.0
+    candidate_watch_score: float = 50.0
+    minimum_risk_reward: float = 0.5
+    aggressive_min_score: float = 70.0
+    moderate_min_score: float = 65.0
+    slow_min_score: float = 75.0
+    aggressive_min_confirmations: int = 3
+    moderate_min_confirmations: int = 3
+    slow_min_confirmations: int = 4
+    adaptive_learning_min_outcomes: int = 30
     def __post_init__(self) -> None:
         self.max_backup_files = _coerce_int("max_backup_files", self.max_backup_files)
         self.goldapi_min_interval_seconds = _coerce_int("goldapi_min_interval_seconds", self.goldapi_min_interval_seconds)
@@ -147,6 +156,20 @@ class SystemConfig:
         self.max_price_deviation_percent = _coerce_float("max_price_deviation_percent", self.max_price_deviation_percent)
         self.min_valid_providers = _coerce_int("min_valid_providers", self.min_valid_providers)
         self.notification_dedupe_seconds = _coerce_int("notification_dedupe_seconds", self.notification_dedupe_seconds)
+        self.signal_min_score = _coerce_float("signal_min_score", self.signal_min_score)
+        self.signal_min_confirmations = _coerce_int("signal_min_confirmations", self.signal_min_confirmations)
+        self.simulation_stop_loss_pips = _coerce_float("simulation_stop_loss_pips", self.simulation_stop_loss_pips)
+        self.trailing_activation_pips = _coerce_float("trailing_activation_pips", self.trailing_activation_pips)
+        self.trailing_step_pips = _coerce_float("trailing_step_pips", self.trailing_step_pips)
+        self.candidate_watch_score = _coerce_float("candidate_watch_score", self.candidate_watch_score)
+        self.minimum_risk_reward = _coerce_float("minimum_risk_reward", self.minimum_risk_reward)
+        self.aggressive_min_score = _coerce_float("aggressive_min_score", self.aggressive_min_score)
+        self.moderate_min_score = _coerce_float("moderate_min_score", self.moderate_min_score)
+        self.slow_min_score = _coerce_float("slow_min_score", self.slow_min_score)
+        self.aggressive_min_confirmations = _coerce_int("aggressive_min_confirmations", self.aggressive_min_confirmations)
+        self.moderate_min_confirmations = _coerce_int("moderate_min_confirmations", self.moderate_min_confirmations)
+        self.slow_min_confirmations = _coerce_int("slow_min_confirmations", self.slow_min_confirmations)
+        self.adaptive_learning_min_outcomes = _coerce_int("adaptive_learning_min_outcomes", self.adaptive_learning_min_outcomes)
         for field in ("backup_enabled", "auto_recovery", "goldapi_enabled", "goldprice_dev_enabled", "itick_enabled", "mt5_enabled"):
             setattr(self, field, _coerce_bool(field, getattr(self, field)))
 
@@ -310,7 +333,22 @@ class ConfigurationManager:
             min_valid_providers=int(system_data.get('min_valid_providers', 1)),
             price_consensus_method=system_data.get('price_consensus_method', 'median'),
             execution_mode=system_data.get('execution_mode', 'simulation'),
-            notification_dedupe_seconds=int(system_data.get('notification_dedupe_seconds', 900))
+            notification_dedupe_seconds=int(system_data.get('notification_dedupe_seconds', 900)),
+            signal_min_score=float(system_data.get('signal_min_score', 65.0)),
+            signal_min_confirmations=int(system_data.get('signal_min_confirmations', 3)),
+            simulation_mode=system_data.get('simulation_mode', 'MODERATE'),
+            simulation_stop_loss_pips=float(system_data.get('simulation_stop_loss_pips', 50.0)),
+            trailing_activation_pips=float(system_data.get('trailing_activation_pips', 20.0)),
+            trailing_step_pips=float(system_data.get('trailing_step_pips', 10.0)),
+            candidate_watch_score=float(system_data.get('candidate_watch_score', 50.0)),
+            minimum_risk_reward=float(system_data.get('minimum_risk_reward', 0.5)),
+            aggressive_min_score=float(system_data.get('aggressive_min_score', 70.0)),
+            moderate_min_score=float(system_data.get('moderate_min_score', 65.0)),
+            slow_min_score=float(system_data.get('slow_min_score', 75.0)),
+            aggressive_min_confirmations=int(system_data.get('aggressive_min_confirmations', 3)),
+            moderate_min_confirmations=int(system_data.get('moderate_min_confirmations', 3)),
+            slow_min_confirmations=int(system_data.get('slow_min_confirmations', 4)),
+            adaptive_learning_min_outcomes=int(system_data.get('adaptive_learning_min_outcomes', 30))
         )
         
         return AppConfig(

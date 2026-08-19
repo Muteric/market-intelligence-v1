@@ -1,4 +1,4 @@
-﻿"""Simulation-only signal intelligence contracts.
+"""Simulation-only signal intelligence contracts.
 
 This module contains scoring, instrument specifications, candidates, trailing stops,
 and outcome recording. It deliberately has no broker or order-placement code.
@@ -76,6 +76,12 @@ class TradeCandidate:
     signal_score: float = 0.0
     accepted: bool = False
     rejection_reason: Optional[str] = None
+    status: str = "NO-TRADE"
+    lifecycle_state: str = "CANDIDATE"
+    trailing_movements: List[Dict[str, Any]] = field(default_factory=list)
+    exit: Optional[float] = None
+    pnl: Optional[float] = None
+    outcome: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -169,9 +175,50 @@ def calculate_signal_score(
     return SignalScore(score, direction, components, confirmations, reasons)
 
 
+def infer_candidate_direction(
+    trend: Optional[str], structure_direction: Optional[str] = None,
+    pattern_direction: Optional[str] = None, momentum: Optional[float] = None,
+) -> str:
+    """Infer evidence direction independently of the final AI execution decision."""
+    votes = []
+    for value in (trend, structure_direction, pattern_direction):
+        upper = str(value or "").upper()
+        if "BULLISH" in upper:
+            votes.append("BUY")
+        elif "BEARISH" in upper:
+            votes.append("SELL")
+    numeric = _finite(momentum)
+    if numeric is not None:
+        if numeric > 0.1:
+            votes.append("BUY")
+        elif numeric < -0.1:
+            votes.append("SELL")
+    if not votes or votes.count("BUY") == votes.count("SELL"):
+        return "WATCH"
+    return "BUY" if votes.count("BUY") > votes.count("SELL") else "SELL"
+
+
+def select_simulation_mode(
+    *, score: SignalScore, adx: Optional[float] = None,
+    mtf_alignment: Optional[float] = None, volatility: Optional[str] = None,
+) -> SimulationMode:
+    """Select a simulation horizon from evidence; never changes execution rules."""
+    alignment = _finite(mtf_alignment) or 0.0
+    if alignment > 1:
+        alignment /= 5.0
+    adx_value = _finite(adx) or 0.0
+    if adx_value >= 30 and alignment >= 0.8 and len(score.confirmations) >= 4:
+        return SimulationMode.SWING
+    if alignment >= 0.6 and len(score.confirmations) >= 3:
+        return SimulationMode.MODERATE
+    if abs(_finite(score.components.get("momentum")) or 0.0) >= 8 and len(score.confirmations) >= 3:
+        return SimulationMode.AGGRESSIVE
+    return SimulationMode.MODERATE
+
+
 def build_trade_candidate(
     asset: str,
-    direction: str,
+    direction: Optional[str],
     entry: Optional[float],
     score: SignalScore,
     *,
@@ -180,43 +227,63 @@ def build_trade_candidate(
     stop_loss_pips: float = 50.0,
     min_score: float = 65.0,
     min_confirmations: int = 3,
+    watch_score: float = 50.0,
+    minimum_risk_reward: float = 0.5,
+    structure_confirmed: bool = True,
 ) -> TradeCandidate:
     mode = SimulationMode.normalize(mode)
     spec = spec or DEFAULT_PIP_SPECS.get(asset)
     entry_value = _finite(entry)
-    accepted = direction in {"BUY", "SELL"} and entry_value is not None
+    candidate_direction = str(direction or score.direction or "WATCH").upper()
+    if candidate_direction not in {"BUY", "SELL"}:
+        candidate_direction = "WATCH"
+    reasons = list(score.reasons)
+    confirmations = list(score.confirmations)
+    accepted = candidate_direction in {"BUY", "SELL"} and entry_value is not None
+    status = "NO-TRADE"
     rejection: Optional[str] = None
-    if not accepted:
-        rejection = "direction or entry unavailable"
+    if entry_value is None:
+        rejection = "REJECTED — entry price unavailable"
+    elif not structure_confirmed:
+        accepted = False
+        rejection = "REJECTED — conflicting market structure"
+    elif candidate_direction == "WATCH":
+        status = "WATCH" if score.score >= watch_score else "NO-TRADE"
+        rejection = "WATCH — setup developing" if status == "WATCH" else "REJECTED — direction unavailable"
+        accepted = False
     elif score.score < min_score:
         accepted = False
-        rejection = f"score below minimum ({score.score:.1f} < {min_score:.1f})"
-    elif len(score.confirmations) < min_confirmations:
+        rejection = f"REJECTED — score below minimum ({score.score:.1f} < {min_score:.1f})"
+    elif len(confirmations) < min_confirmations:
         accepted = False
-        rejection = f"insufficient confirmations ({len(score.confirmations)} < {min_confirmations})"
+        rejection = f"REJECTED — insufficient MTF confirmation ({len(confirmations)} < {min_confirmations})"
 
     stop = target = expected = rr = None
-    if accepted and spec is not None:
+    if candidate_direction in {"BUY", "SELL"} and entry_value is not None and spec is not None:
         low, high = MODE_TARGET_PIPS[mode]
         target_pips = (low + high) / 2.0
         stop_delta = spec.price_delta(stop_loss_pips)
         target_delta = spec.price_delta(target_pips)
-        if direction == "BUY":
-            stop, target = entry_value - stop_delta, entry_value + target_delta
-        else:
-            stop, target = entry_value + stop_delta, entry_value - target_delta
+        stop = entry_value - stop_delta if candidate_direction == "BUY" else entry_value + stop_delta
+        target = entry_value + target_delta if candidate_direction == "BUY" else entry_value - target_delta
         expected = target_delta
         rr = target_pips / stop_loss_pips if stop_loss_pips > 0 else None
-
+        if rr is not None and rr < minimum_risk_reward:
+            accepted = False
+            rejection = f"REJECTED — risk/reward below minimum ({rr:.2f} < {minimum_risk_reward:.2f})"
+        elif accepted:
+            status = "BUY" if candidate_direction == "BUY" else "SELL"
+    if accepted:
+        status = candidate_direction
+        rejection = None
     return TradeCandidate(
-        asset=asset, direction=direction, confidence=score.score / 100.0,
+        asset=asset, direction=candidate_direction, confidence=score.score / 100.0,
         mode=mode.value, entry=entry_value, stop_loss=stop, take_profit=target,
-        expected_move=expected, risk_reward=rr, reasons=score.reasons,
-        supporting_timeframes=["5M", "15M", "1H", "4H", "Daily"] if "multi_timeframe" in score.confirmations else [],
-        supporting_indicators=score.confirmations, signal_score=score.score,
-        accepted=accepted, rejection_reason=rejection,
+        expected_move=expected, risk_reward=rr, reasons=reasons,
+        supporting_timeframes=["5M", "15M", "1H", "4H", "Daily"] if "multi_timeframe" in confirmations else [],
+        supporting_indicators=confirmations, signal_score=score.score,
+        accepted=accepted, rejection_reason=rejection, status=status,
     )
-
 
 class TrailingStopManager:
     def __init__(self, activation_pips: float = 20.0, step_pips: float = 10.0):
@@ -232,8 +299,8 @@ class TrailingStopManager:
         favorable_pips = favorable / spec.pip_size
         if favorable_pips < self.activation_pips:
             return float(existing_stop)
-        steps = math.floor((favorable_pips - self.activation_pips) / self.step_pips) + 1
-        lock_pips = (steps * self.step_pips)
+        steps = math.floor((favorable_pips - self.activation_pips) / self.step_pips)
+        lock_pips = max(0, steps * self.step_pips)
         proposed = float(entry) + spec.price_delta(lock_pips) if str(direction).upper() == "BUY" else float(entry) - spec.price_delta(lock_pips)
         return max(float(existing_stop), proposed) if str(direction).upper() == "BUY" else min(float(existing_stop), proposed)
 
@@ -242,7 +309,8 @@ class SignalOutcomeTracker:
     """Records candidates and resolves outcomes; it never places orders."""
     TARGETS = (10.0, 20.0, 50.0, 100.0, 200.0)
 
-    def __init__(self, path: str = "data/signal_outcomes.json"):
+    def __init__(self, path: str = "data/signal_outcomes.json", minimum_outcomes: int = 30):
+        self.minimum_outcomes = max(1, int(minimum_outcomes))
         self.path = Path(path)
         self.records: List[Dict[str, Any]] = []
         self._load()
@@ -257,7 +325,7 @@ class SignalOutcomeTracker:
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.records, indent=2), encoding="utf-8")
+        self.path.write_text(json.dumps(self.records, indent=2, default=str), encoding="utf-8")
 
     def record(self, candidate: TradeCandidate, conditions: Optional[Dict[str, Any]] = None) -> str:
         record_id = f"candidate-{len(self.records) + 1}"
@@ -267,6 +335,36 @@ class SignalOutcomeTracker:
         self._save()
         return record_id
 
+    def open_candidate(self, record_id: str) -> Optional[Dict[str, Any]]:
+        record = next((item for item in self.records if item.get("id") == record_id), None)
+        if record is not None and record.get("accepted"):
+            record["lifecycle_state"] = "OPEN"
+            self._save()
+        return record
+
+    def update_trailing(self, record_id: str, current_price: float, spec: PipSpecification, manager: Optional[TrailingStopManager] = None) -> Optional[Dict[str, Any]]:
+        record = next((item for item in self.records if item.get("id") == record_id), None)
+        if record is None or record.get("entry") is None or record.get("stop_loss") is None:
+            return record
+        manager = manager or TrailingStopManager()
+        previous = float(record["stop_loss"])
+        updated = manager.update(float(record["entry"]), float(current_price), previous, record["direction"], spec)
+        if updated != previous:
+            record["stop_loss"] = updated
+            record.setdefault("trailing_movements", []).append({"price": float(current_price), "stop": updated, "timestamp": datetime.now(timezone.utc).isoformat()})
+            record["lifecycle_state"] = "TRAILING"
+            self._save()
+        return record
+
+    def close_candidate(self, record_id: str, exit_price: float, spec: PipSpecification, reason: str = "simulated close") -> Optional[Dict[str, Any]]:
+        record = next((item for item in self.records if item.get("id") == record_id), None)
+        if record is None or record.get("entry") is None:
+            return record
+        entry = float(record["entry"])
+        movement = (float(exit_price) - entry) if record.get("direction") == "BUY" else (entry - float(exit_price))
+        record.update({"exit": float(exit_price), "pnl": movement, "outcome": "WIN" if movement > 0 else "LOSS" if movement < 0 else "FLAT", "exit_reason": reason, "lifecycle_state": "CLOSED", "resolved": True})
+        self._save()
+        return record
     def resolve(self, record_id: str, prices: Iterable[float], spec: PipSpecification) -> Optional[Dict[str, Any]]:
         record = next((item for item in self.records if item.get("id") == record_id), None)
         if record is None or record.get("resolved"):
@@ -285,10 +383,27 @@ class SignalOutcomeTracker:
 
     def learning_status(self) -> Dict[str, Any]:
         resolved = [item for item in self.records if item.get("resolved")]
-        wins = [item for item in resolved if item.get("targets_reached", {}).get("20.0") and not item.get("initial_stop_hit")]
+        wins = [item for item in resolved if item.get("outcome") == "WIN" or (item.get("targets_reached", {}).get("20.0") and not item.get("initial_stop_hit"))]
+        minimum = self.minimum_outcomes
+        enabled = len(resolved) >= minimum
         return {
             "candidates_evaluated": len(self.records),
             "outcomes_resolved": len(resolved),
             "win_rate": len(wins) / len(resolved) if resolved else None,
-            "enough_observations_for_adaptive_weighting": len(resolved) >= 30,
+            "adaptive_weighting_enabled": enabled,
+            "adaptive_weighting_minimum": minimum,
+            "enough_observations_for_adaptive_weighting": enabled,
+            "adaptive_weights": self._adaptive_weights(resolved) if enabled else {"trend": 1.0, "momentum": 1.0, "market_structure": 1.0, "pattern": 1.0},
         }
+
+    @staticmethod
+    def _adaptive_weights(resolved: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Adjust feature weights only; risk and execution settings are immutable here."""
+        weights = {"trend": 1.0, "momentum": 1.0, "market_structure": 1.0, "pattern": 1.0}
+        for record in resolved:
+            factor = 1.05 if record.get("outcome") == "WIN" else 0.95 if record.get("outcome") == "LOSS" else 1.0
+            evidence = set((record.get("conditions") or {}).keys()) | set(record.get("supporting_indicators") or [])
+            for feature in weights:
+                if feature in evidence:
+                    weights[feature] = max(0.5, min(1.5, weights[feature] * factor))
+        return weights

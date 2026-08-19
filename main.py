@@ -1,4 +1,4 @@
-﻿"""
+"""
 AI Trading Intelligence Bot v2.0 - Main Application
 Comprehensive trading system for BTCUSD and XAUUSD with modular architecture.
 """
@@ -31,7 +31,7 @@ from ai_decision_engine import AIDecisionEngine
 from trade_execution_simulator import TradeExecutionSimulator
 from reliability_manager import ReliabilityManager
 from mt5_bridge import MT5Connection, MT5MarketData, MT5AccountReader, MT5HealthMonitor, MT5SymbolMapper
-from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, build_trade_candidate, calculate_signal_score)
+from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, build_trade_candidate, calculate_signal_score, infer_candidate_direction, select_simulation_mode)
 
 # Set up logging
 logging.basicConfig(
@@ -87,7 +87,7 @@ class AITradingIntelligenceBot:
         self.telegram_delivery_failures = 0
         self._telegram_message_times: Dict[str, datetime] = {}
         self.mt5_health_monitor: Optional[MT5HealthMonitor] = None
-        self.outcome_tracker = SignalOutcomeTracker()
+        self.outcome_tracker = SignalOutcomeTracker(minimum_outcomes=self.config.system.adaptive_learning_min_outcomes)
         self.last_trade_candidates: Dict[str, Any] = {}
         
         # Initialize components
@@ -378,8 +378,11 @@ class AITradingIntelligenceBot:
                     validation = self._get_validation_result(symbol)
                     provider_count = len(getattr(validation, "provider_prices", {}) or {}) if validation else 0
                     provider_total = max(1, int(self.market_data_status[symbol].get("provider_total", provider_count)))
+                    evidence_direction = ai_decision.decision if ai_decision.decision in {"BUY", "SELL"} else infer_candidate_direction(
+                        ai_decision.trend, structure_direction, pattern_direction, ai_decision.momentum
+                    )
                     score = calculate_signal_score(
-                        ai_decision.decision,
+                        evidence_direction,
                         trend=ai_decision.trend,
                         momentum=ai_decision.momentum,
                         mtf_alignment=getattr(multi_timeframe, "confidence_score", None),
@@ -390,19 +393,32 @@ class AITradingIntelligenceBot:
                         spot_consensus=validation.confidence_score if validation else None,
                         provider_diversity=provider_count / provider_total,
                     )
+                    configured_mode = str(self.config.system.simulation_mode).upper()
+                    if configured_mode == "AUTO":
+                        selected_mode = select_simulation_mode(
+                            score=score,
+                            adx=getattr(technical_indicators, "adx", None),
+                            mtf_alignment=getattr(multi_timeframe, "confidence_score", None),
+                            volatility=ai_decision.volatility,
+                        )
+                    else:
+                        selected_mode = SimulationMode.normalize(configured_mode)
                     candidate = build_trade_candidate(
-                        symbol, ai_decision.decision, current_price, score,
-                        mode=SimulationMode.normalize(self.config.system.simulation_mode),
+                        symbol, evidence_direction, current_price, score,
+                        mode=selected_mode,
                         spec=DEFAULT_PIP_SPECS.get(symbol),
                         stop_loss_pips=self.config.system.simulation_stop_loss_pips,
-                        min_score=self.config.system.signal_min_score,
-                        min_confirmations=self.config.system.signal_min_confirmations,
+                        min_score=(self.config.system.aggressive_min_score if self.config.system.simulation_mode.upper() == "AGGRESSIVE" else self.config.system.slow_min_score if self.config.system.simulation_mode.upper() in {"SLOW", "SWING"} else self.config.system.moderate_min_score),
+                        min_confirmations=(self.config.system.aggressive_min_confirmations if self.config.system.simulation_mode.upper() == "AGGRESSIVE" else self.config.system.slow_min_confirmations if self.config.system.simulation_mode.upper() in {"SLOW", "SWING"} else self.config.system.moderate_min_confirmations),
+                        watch_score=self.config.system.candidate_watch_score,
+                        minimum_risk_reward=self.config.system.minimum_risk_reward,
+                        structure_confirmed=not (structure_direction and pattern_direction and structure_direction != pattern_direction),
                     )
                     ai_decision.signal_score = score.score
                     ai_decision.trade_candidate = candidate
                     self.last_trade_candidates[symbol] = candidate
-                    if ai_decision.decision in {"BUY", "SELL"}:
-                        self.outcome_tracker.record(candidate, {"trend": ai_decision.trend, "regime": getattr(ai_decision.market_regime, "regime", None), "patterns": pattern_values})
+                    if candidate.direction in {"BUY", "SELL", "WATCH"}:
+                        self.outcome_tracker.record(candidate, {"trend": ai_decision.trend, "regime": getattr(getattr(ai_decision.market_regime, "regime", None), "value", getattr(ai_decision.market_regime, "regime", None)), "patterns": pattern_values})
                     signal_result = self.signal_engine.generate_signal(
                         symbol,
                         market_analysis,
