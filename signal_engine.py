@@ -1,4 +1,4 @@
-"""
+﻿"""
 Signal Engine for AI Trading Intelligence Bot
 Generates trading signals and manages position logic for each asset.
 """
@@ -82,6 +82,7 @@ class SignalResult:
     stress_test_results: Dict[str, Any] = None
     backtest_results: Dict[str, Any] = None
     forward_test_results: Dict[str, Any] = None
+    trade_candidate: Any = None
     model_confidence: float = 0.0
     model_accuracy: float = 0.0
     model_precision: float = 0.0

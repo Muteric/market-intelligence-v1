@@ -1,4 +1,4 @@
-"""
+﻿"""
 AI Decision Engine for AI Trading Intelligence Bot
 Enhanced AI decision engine with comprehensive synthesis of market data, technical indicators, and portfolio state.
 """
@@ -66,6 +66,8 @@ class AIDecisionResult:
     ai_explanation: str
     confidence_reasons: List[str] = None
     pattern_evidence: Dict[str, Any] = None
+    signal_score: float = 0.0
+    trade_candidate: Any = None
 
 class AIDecisionEngine:
     """Enhanced AI decision engine with comprehensive market analysis"""

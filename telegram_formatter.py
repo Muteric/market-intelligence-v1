@@ -1,4 +1,4 @@
-"""
+﻿"""
 Telegram Formatter for AI Trading Intelligence Bot
 Generates professional-grade Telegram reports for trading signals and portfolio performance.
 """
@@ -232,6 +232,49 @@ class TelegramFormatter:
         else:
             lines.append("DATA UNAVAILABLE")
 
+        candidate = getattr(signal_result, "trade_candidate", None)
+        if candidate and getattr(candidate, "accepted", False):
+            lines.extend([
+                "",
+                "TRADE CANDIDATE (SIMULATION ONLY)",
+                f"MODE: {candidate.mode}",
+                f"DIRECTION: {candidate.direction}",
+                f"ENTRY: {candidate.entry}",
+                f"STOP LOSS: {candidate.stop_loss}",
+                f"TAKE PROFIT: {candidate.take_profit}",
+                f"EXPECTED MOVE: {candidate.expected_move}",
+                f"R:R: {candidate.risk_reward}",
+                f"CONFIDENCE: {candidate.confidence:.0%}",
+                f"TIMEFRAME ALIGNMENT: {', '.join(candidate.supporting_timeframes) or 'UNAVAILABLE'}",
+                f"WHY: {'; '.join(candidate.reasons) or 'UNAVAILABLE'}",
+            ])
+        elif candidate and getattr(candidate, "rejection_reason", None):
+            lines.extend(["", "TRADE CANDIDATE: REJECTED", f"Reason: {candidate.rejection_reason}"])
+
+        tracker = getattr(self, "outcome_tracker", None)
+        if tracker is not None:
+            learning = tracker.learning_status()
+            lines.extend([
+                "",
+                "LEARNING STATUS",
+                f"Candidates evaluated: {learning.get('candidates_evaluated', 0)}",
+                f"Outcomes resolved: {learning.get('outcomes_resolved', 0)}",
+                f"Win rate: {learning.get('win_rate'):.0%}" if learning.get('win_rate') is not None else "Win rate: N/A",
+                "Adaptive weighting: DISABLED until sufficient validated observations",
+            ])
+        mt5_monitor = getattr(self, "mt5_health_monitor", None)
+        if mt5_monitor is not None:
+            mt5_report = mt5_monitor.report().get("mt5", {})
+            symbols = mt5_report.get("symbols", {})
+            lines.extend([
+                "",
+                "MT5 STATUS",
+                f"MT5: {mt5_report.get('status', 'DISCONNECTED')}",
+                f"Mode: {mt5_report.get('mode', 'READ_ONLY')}",
+                f"Account: {mt5_report.get('account', 'UNKNOWN')}",
+                f"{signal_result.symbol}: {'AVAILABLE' if symbols.get(signal_result.symbol) else 'UNAVAILABLE'}",
+                "Execution: DISABLED",
+            ])
         lines.extend([
             "",
             "TRADE PLAN",

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Market Data Aggregator for AI Trading Intelligence Bot
 Multi-source market data aggregation with price validation and consensus calculation.
 """
@@ -346,27 +346,27 @@ class MarketDataAggregator:
         )
 
     async def _fetch_mt5(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
-        if symbol != 'XAUUSD' or not getattr(self.system_config, 'mt5_enabled', True):
+        """Fetch optional read-only MT5 tick plus validated M5 OHLCV."""
+        if not getattr(self.system_config, "mt5_enabled", False):
             return None
         try:
-            import MetaTrader5 as mt5
-        except ImportError:
-            logger.info('MT5 provider unavailable: MetaTrader5 package is not installed')
+            from mt5_bridge import MT5Connection, MT5MarketData, MT5SymbolMapper
+            connection = MT5Connection(enabled=True, mode=getattr(self.system_config, "mt5_mode", "READ_ONLY"), terminal_path=getattr(self.system_config, "mt5_terminal_path", ""))
+            if not connection.connect():
+                logger.info("MT5 provider unavailable: %s", connection.last_error or "connection failed")
+                return None
+            market = MT5MarketData(connection, MT5SymbolMapper.from_environment(self.system_config))
+            tick = market.get_tick(symbol)
+            if tick is None:
+                connection.shutdown()
+                return None
+            ohlcv = market.get_ohlcv(symbol, "M5", 1000)
+            point = self._normalized_quote(symbol, tick["last"], provider["name"], "mt5", timestamp=tick["timestamp"], bid=tick["bid"], ask=tick["ask"], volume=tick["volume"], ohlcv=ohlcv or None)
+            connection.shutdown()
+            return point
+        except Exception as exc:
+            logger.info("MT5 provider unavailable: %s", type(exc).__name__)
             return None
-        mt5_symbol = getattr(self.system_config, 'mt5_xauusd_symbol', None) or os.getenv('MT5_XAUUSD_SYMBOL', 'XAUUSD')
-        if not mt5.symbol_select(mt5_symbol, True):
-            return None
-        tick = mt5.symbol_info_tick(mt5_symbol)
-        if tick is None:
-            return None
-        bid = float(getattr(tick, 'bid', 0.0) or 0.0)
-        ask = float(getattr(tick, 'ask', 0.0) or 0.0)
-        last = float(getattr(tick, 'last', 0.0) or 0.0) or (bid + ask) / 2
-        return self._normalized_quote(
-            symbol, last, provider['name'], 'mt5', timestamp=getattr(tick, 'time', None),
-            bid=bid, ask=ask, volume=getattr(tick, 'volume', 0.0),
-        )
-
     async def _fetch_itick(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
         if symbol != 'XAUUSD':
             return None
@@ -730,7 +730,7 @@ class MarketDataAggregator:
         enabled = {
             'goldapi': getattr(self.system_config, 'goldapi_enabled', True),
             'goldprice_dev': getattr(self.system_config, 'goldprice_dev_enabled', True),
-            'mt5': getattr(self.system_config, 'mt5_enabled', True),
+            'mt5': getattr(self.system_config, 'mt5_enabled', False),
             'itick': getattr(self.system_config, 'itick_enabled', True),
         }
         selected = [name.strip() for name in configured.split(',') if name.strip() in self.providers and enabled.get(name, True)]
@@ -1079,11 +1079,14 @@ class MarketDataAggregator:
             elif provider.get('required_key') and not self._secret_available(provider['required_key']):
                 status[name] = f"unavailable: missing {provider['required_key']}"
             elif name == 'mt5':
-                try:
-                    import MetaTrader5  # noqa: F401
-                    status[name] = "configured"
-                except ImportError:
-                    status[name] = "unavailable: MetaTrader5 package missing"
+                if not getattr(self.system_config, 'mt5_enabled', False):
+                    status[name] = "unavailable: disabled"
+                else:
+                    try:
+                        import MetaTrader5  # noqa: F401
+                        status[name] = "configured"
+                    except ImportError:
+                        status[name] = "unavailable: MetaTrader5 package missing"
             else:
                 status[name] = "configured"
         return status

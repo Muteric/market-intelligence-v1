@@ -1,4 +1,4 @@
-"""
+﻿"""
 Multi-Timeframe Analyzer for AI Trading Intelligence Bot
 Analyzes multiple timeframes (5M, 15M, 1H, 4H, Daily) to determine trend alignment and generate high-confidence signals.
 """
@@ -133,6 +133,54 @@ class MultiTimeframeAnalyzer:
             bar["low"] for bar in bars[-100:]
         ]
     
+    def set_ohlcv_data(self, symbol: str, candles: List[Dict[str, Any]]) -> None:
+        """Resample one validated base series into independent analysis timeframes."""
+        from collections import defaultdict
+        from datetime import timedelta
+        normalized = []
+        for candle in candles:
+            stamp = candle.get("timestamp")
+            if isinstance(stamp, str):
+                stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            if stamp is None:
+                continue
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            normalized.append({**candle, "timestamp": stamp.astimezone(timezone.utc)})
+        normalized.sort(key=lambda row: row["timestamp"])
+        if not normalized:
+            return
+        minutes = {"5M": 5, "15M": 15, "1H": 60, "4H": 240, "Daily": 1440}
+        for timeframe, interval in minutes.items():
+            buckets = defaultdict(list)
+            for candle in normalized:
+                stamp = candle["timestamp"]
+                if interval == 1440:
+                    key = stamp.replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    total = stamp.hour * 60 + stamp.minute
+                    bucket_minute = (total // interval) * interval
+                    key = stamp.replace(hour=bucket_minute // 60, minute=bucket_minute % 60, second=0, microsecond=0)
+                buckets[key].append(candle)
+            bars = []
+            for key, group in sorted(buckets.items()):
+                bars.append({
+                    "timestamp": group[-1]["timestamp"],
+                    "open": float(group[0]["open"]),
+                    "high": max(float(item["high"]) for item in group),
+                    "low": min(float(item["low"]) for item in group),
+                    "close": float(group[-1]["close"]),
+                    "volume": sum(float(item.get("volume", 0.0) or 0.0) for item in group),
+                })
+            self._store_bars(symbol, timeframe, bars)
+
+    def _store_bars(self, symbol: str, timeframe: str, bars: List[Dict[str, Any]]) -> None:
+        bars = bars[-1000:]
+        self.timeframe_data.setdefault(symbol, {})[timeframe] = [float(bar["close"]) for bar in bars]
+        self.timeframe_volumes.setdefault(symbol, {})[timeframe] = [float(bar.get("volume", 0.0) or 0.0) for bar in bars]
+        self.timeframe_highs.setdefault(symbol, {})[timeframe] = [float(bar["high"]) for bar in bars]
+        self.timeframe_lows.setdefault(symbol, {})[timeframe] = [float(bar["low"]) for bar in bars]
+        self.timeframe_candles.setdefault(symbol, {})[timeframe] = bars
     def analyze_multi_timeframe(self, symbol: str) -> MultiTimeframeResult:
         """Analyze multiple timeframes for a symbol"""
         timeframe_analyses = {}

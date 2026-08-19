@@ -1,0 +1,47 @@
+﻿from datetime import datetime, timezone, timedelta
+
+from signal_intelligence import (
+    DEFAULT_PIP_SPECS, SimulationMode, TrailingStopManager,
+    build_trade_candidate, calculate_signal_score, SignalOutcomeTracker,
+)
+from technical_indicators import TechnicalIndicators
+
+
+def test_unavailable_indicator_is_none_not_zero():
+    indicators = TechnicalIndicators()
+    indicators.update_price_data("BTCUSD", 100.0, 1.0, 101.0, 99.0)
+    assert indicators._calculate_rsi("BTCUSD").rsi is None
+    assert indicators._calculate_atr("BTCUSD").atr is None
+
+
+def test_signal_score_ignores_missing_evidence_and_is_bounded():
+    score = calculate_signal_score("BUY", trend="bullish", momentum=None, mtf_alignment=None)
+    assert 0 <= score.score <= 100
+    assert "momentum" not in score.components
+
+
+def test_candidate_modes_use_instrument_spec_and_confirmation_gate():
+    score = calculate_signal_score("BUY", trend="bullish", structure_direction="bullish", pattern_direction="bullish", mtf_alignment=1.0)
+    candidate = build_trade_candidate("XAUUSD", "BUY", 2000.0, score, mode=SimulationMode.SWING, min_confirmations=2)
+    assert candidate.accepted
+    assert candidate.take_profit > candidate.entry
+    assert candidate.stop_loss < candidate.entry
+
+
+def test_trailing_stop_only_moves_forward():
+    manager = TrailingStopManager()
+    spec = DEFAULT_PIP_SPECS["XAUUSD"]
+    initial = manager.initial_stop(2000.0, "BUY", spec)
+    moved = manager.update(2000.0, 2000.0 + 25 * spec.pip_size, initial, "BUY", spec)
+    assert moved > initial
+    assert manager.update(2000.0, 2000.0 + 15 * spec.pip_size, moved, "BUY", spec) == moved
+
+
+def test_outcome_tracker_records_and_resolves(tmp_path):
+    score = calculate_signal_score("BUY", trend="bullish", structure_direction="bullish", mtf_alignment=1.0)
+    candidate = build_trade_candidate("BTCUSD", "BUY", 100.0, score, min_confirmations=2)
+    tracker = SignalOutcomeTracker(str(tmp_path / "outcomes.json"))
+    record_id = tracker.record(candidate, {"regime": "TRENDING"})
+    tracker.resolve(record_id, [100.0, 110.0, 120.0], DEFAULT_PIP_SPECS["BTCUSD"])
+    assert tracker.learning_status()["candidates_evaluated"] == 1
+    assert tracker.learning_status()["outcomes_resolved"] == 1

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Technical Indicators Calculator for AI Trading Intelligence Bot
 Comprehensive technical analysis with RSI, MACD, EMA, SMA, Bollinger Bands, ATR, ADX, Stochastic, VWAP, OBV, Ichimoku, Fibonacci, and Pivot Points.
 """
@@ -28,35 +28,39 @@ class IndicatorType(Enum):
 @dataclass
 class RSIResult:
     """RSI indicator result"""
-    rsi: float
+    rsi: Optional[float]
     overbought: bool
     oversold: bool
     trend: str
+    available: bool = True
 
 @dataclass
 class MACDResult:
     """MACD indicator result"""
-    macd: float
-    signal: float
-    histogram: float
-    macd_histogram: float
+    macd: Optional[float]
+    signal: Optional[float]
+    histogram: Optional[float]
+    macd_histogram: Optional[float]
     trend: str
+    available: bool = True
 
 @dataclass
 class EMAResult:
     """EMA indicator result"""
-    ema_20: float
-    ema_50: float
-    ema_100: float
-    ema_200: float
+    ema_20: Optional[float]
+    ema_50: Optional[float]
+    ema_100: Optional[float]
+    ema_200: Optional[float]
     trend: str
+    available: bool = True
 
 @dataclass
 class SMAResult:
     """SMA indicator result"""
-    sma_50: float
-    sma_200: float
+    sma_50: Optional[float]
+    sma_200: Optional[float]
     cross: str
+    available: bool = True
 
 @dataclass
 class BollingerBandsResult:
@@ -71,41 +75,46 @@ class BollingerBandsResult:
 @dataclass
 class ATRResult:
     """ATR indicator result"""
-    atr: float
-    normalized_atr: float
+    atr: Optional[float]
+    normalized_atr: Optional[float]
     volatility: str
+    available: bool = True
 
 @dataclass
 class ADXResult:
     """ADX indicator result"""
-    adx: float
-    di_plus: float
-    di_minus: float
+    adx: Optional[float]
+    di_plus: Optional[float]
+    di_minus: Optional[float]
     trend_strength: str
     trend_direction: str
+    available: bool = True
 
 @dataclass
 class StochasticResult:
     """Stochastic indicator result"""
-    k: float
-    d: float
+    k: Optional[float]
+    d: Optional[float]
     overbought: bool
     oversold: bool
     trend: str
+    available: bool = True
 
 @dataclass
 class VWAPResult:
     """VWAP indicator result"""
-    vwap: float
-    deviation: float
+    vwap: Optional[float]
+    deviation: Optional[float]
     trend: str
+    available: bool = True
 
 @dataclass
 class OBVResult:
     """OBV indicator result"""
-    obv: float
+    obv: Optional[float]
     obv_trend: str
     volume_trend: str
+    available: bool = True
 
 @dataclass
 class IchimokuResult:
@@ -269,7 +278,7 @@ class TechnicalIndicators:
         """Calculate RSI (Relative Strength Index)"""
         prices = self.price_history[symbol]
         if len(prices) < 14:
-            return RSIResult(50.0, False, False, "neutral")
+            return RSIResult(None, False, False, "UNAVAILABLE", False)
         
         # Calculate gains and losses
         gains = []
@@ -315,7 +324,7 @@ class TechnicalIndicators:
         """Calculate MACD (Moving Average Convergence Divergence)"""
         prices = self.price_history[symbol]
         if len(prices) < 26:
-            return MACDResult(0.0, 0.0, 0.0, 0.0, "neutral")
+            return MACDResult(None, None, None, None, "UNAVAILABLE", False)
         
         # Calculate EMA 12, EMA 26
         ema_12 = self._calculate_ema_n(prices, 12)
@@ -346,7 +355,7 @@ class TechnicalIndicators:
         """Calculate EMA (Exponential Moving Average)"""
         prices = self.price_history[symbol]
         if len(prices) < 200:
-            return EMAResult(0.0, 0.0, 0.0, 0.0, "neutral")
+            return EMAResult(None, None, None, None, "UNAVAILABLE", False)
         
         # Calculate EMAs
         ema_20 = self._calculate_ema_n(prices, 20)
@@ -376,7 +385,7 @@ class TechnicalIndicators:
         """Calculate SMA (Simple Moving Average)"""
         prices = self.price_history[symbol]
         if len(prices) < 50:
-            return SMAResult(0.0, 0.0, "neutral")
+            return SMAResult(None, None, "UNAVAILABLE", False)
         
         # Calculate SMAs
         sma_50 = sum(prices[-50:]) / 50
@@ -396,7 +405,7 @@ class TechnicalIndicators:
         """Calculate Bollinger Bands"""
         prices = self.price_history[symbol]
         if len(prices) < 20:
-            return BollingerBandsResult(0.0, 0.0, 0.0, 0.0, 0.0, False)
+            return BollingerBandsResult(None, None, None, None, None, False)
         
         # Calculate SMA 20
         sma_20 = sum(prices[-20:]) / 20
@@ -428,7 +437,7 @@ class TechnicalIndicators:
         lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 14:
-            return ATRResult(0.0, 0.0, "low")
+            return ATRResult(None, None, "UNAVAILABLE", False)
         
         # Calculate True Range
         true_ranges = []
@@ -461,172 +470,83 @@ class TechnicalIndicators:
         return ATRResult(atr, normalized_atr, volatility)
     
     def _calculate_adx(self, symbol: str) -> ADXResult:
-        """Calculate ADX (Average Directional Index)"""
+        """Calculate Wilder-style ADX from true OHLC data."""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol) or prices
-        lows = self.low_history.get(symbol) or prices
-        
-        if len(prices) < 14:
-            return ADXResult(0.0, 0.0, 0.0, "neutral", "neutral")
-        
-        # Calculate Directional Movement
-        dm_plus = []
-        dm_minus = []
-        
+        highs = self.high_history.get(symbol, [])
+        lows = self.low_history.get(symbol, [])
+        if len(prices) < 15 or len(highs) != len(prices) or len(lows) != len(prices):
+            return ADXResult(None, None, None, "UNAVAILABLE", "UNAVAILABLE", False)
+        tr_values, plus_dm, minus_dm = [], [], []
         for i in range(1, len(prices)):
-            high = highs[i] if i < len(highs) else prices[i]
-            low = lows[i] if i < len(lows) else prices[i]
-            
-            up_move = high - prices[i-1]
-            down_move = prices[i-1] - low
-            
-            if up_move > down_move and up_move > 0:
-                dm_plus.append(up_move)
-                dm_minus.append(0)
-            elif down_move > up_move and down_move > 0:
-                dm_plus.append(0)
-                dm_minus.append(down_move)
-            else:
-                dm_plus.append(0)
-                dm_minus.append(0)
-        
-        # Calculate smoothed values
-        sm_dm_plus = sum(dm_plus[-14:]) / 14
-        sm_dm_minus = sum(dm_minus[-14:]) / 14
-        
-        # Calculate TR (True Range) for normalization
-        tr_values = []
-        for i in range(1, len(prices)):
-            high = highs[i] if i < len(highs) else prices[i]
-            low = lows[i] if i < len(lows) else prices[i]
-            
-            tr1 = high - low
-            tr2 = abs(high - prices[i-1])
-            tr3 = abs(low - prices[i-1])
-            
-            tr_values.append(max(tr1, tr2, tr3))
-        
-        sm_tr = sum(tr_values[-14:]) / 14
-        
-        if sm_tr == 0:
-            return ADXResult(0.0, 0.0, 0.0, "neutral", "neutral")
-        
-        # Calculate DI+
-        di_plus = (sm_dm_plus / sm_tr) * 100
-        di_minus = (sm_dm_minus / sm_tr) * 100
-        
-        # Calculate DX
-        dx = abs(di_plus - di_minus) / ((di_plus + di_minus) / 2) * 100 if (di_plus + di_minus) > 0 else 0
-        
-        # Calculate ADX (smoothed DX)
-        adx_values = [dx]  # Simplified - would need proper smoothing
-        adx = sum(adx_values[-14:]) / 14
-        
-        # Determine trend strength
-        if adx > 25:
-            trend_strength = "strong"
-        elif adx > 20:
-            trend_strength = "moderate"
-        else:
-            trend_strength = "weak"
-        
-        # Determine trend direction
-        if di_plus > di_minus:
-            trend_direction = "bullish"
-        elif di_minus > di_plus:
-            trend_direction = "bearish"
-        else:
-            trend_direction = "neutral"
-        
-        return ADXResult(adx, di_plus, di_minus, trend_strength, trend_direction)
-    
+            up_move = highs[i] - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+            minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+            tr_values.append(max(highs[i] - lows[i], abs(highs[i] - prices[i - 1]), abs(lows[i] - prices[i - 1])))
+        period = 14
+        if len(tr_values) < period:
+            return ADXResult(None, None, None, "UNAVAILABLE", "UNAVAILABLE", False)
+        dx_values = []
+        for end in range(period, len(tr_values) + 1):
+            tr = sum(tr_values[end - period:end]) / period
+            if tr <= 0:
+                continue
+            di_plus = sum(plus_dm[end - period:end]) / period / tr * 100.0
+            di_minus = sum(minus_dm[end - period:end]) / period / tr * 100.0
+            denominator = di_plus + di_minus
+            dx_values.append(abs(di_plus - di_minus) / denominator * 100.0 if denominator else 0.0)
+        if not dx_values:
+            return ADXResult(None, None, None, "UNAVAILABLE", "UNAVAILABLE", False)
+        last_end = len(tr_values)
+        tr = sum(tr_values[-period:]) / period
+        di_plus = sum(plus_dm[-period:]) / period / tr * 100.0 if tr else 0.0
+        di_minus = sum(minus_dm[-period:]) / period / tr * 100.0 if tr else 0.0
+        adx = sum(dx_values[-period:]) / min(period, len(dx_values))
+        strength = "strong" if adx > 25 else "moderate" if adx > 20 else "weak"
+        direction = "bullish" if di_plus > di_minus else "bearish" if di_minus > di_plus else "neutral"
+        return ADXResult(adx, di_plus, di_minus, strength, direction, True)
     def _calculate_stochastic(self, symbol: str) -> StochasticResult:
-        """Calculate Stochastic Oscillator"""
+        """Calculate a rolling 14-period stochastic oscillator."""
         prices = self.price_history[symbol]
-        highs = self.high_history.get(symbol) or prices
-        lows = self.low_history.get(symbol) or prices
-        
-        if len(prices) < 14:
-            return StochasticResult(50.0, 50.0, False, False, "neutral")
-        
-        # Find highest high and lowest low over last 14 periods
-        recent_highs = highs[-14:] if len(highs) >= 14 else highs
-        recent_lows = lows[-14:] if len(lows) >= 14 else lows
-        
-        highest_high = max(recent_highs)
-        lowest_low = min(recent_lows)
-        
-        current_price = prices[-1]
-        
-        if highest_high == lowest_low:
-            k = 50.0
-        else:
-            k = ((current_price - lowest_low) / (highest_high - lowest_low)) * 100
-        
-        # Calculate D (3-period SMA of K)
+        highs = self.high_history.get(symbol, [])
+        lows = self.low_history.get(symbol, [])
+        period = 14
+        if len(prices) < period or len(highs) != len(prices) or len(lows) != len(prices):
+            return StochasticResult(None, None, False, False, "UNAVAILABLE", False)
         k_values = []
-        for i in range(1, min(16, len(prices)) + 1):
-            price = prices[-i]
-            high = highs[-i] if i <= len(highs) else price
-            low = lows[-i] if i <= len(lows) else price
-            
-            if high == low:
-                k_val = 50.0
-            else:
-                k_val = ((price - low) / (high - low)) * 100
-            k_values.append(k_val)
-        
-        d = sum(k_values[-3:]) / 3 if len(k_values) >= 3 else k
-        
-        # Determine status
-        overbought = k > 80
-        oversold = k < 20
-        
-        if k > d and k > 50:
-            trend = "bullish"
-        elif k < d and k < 50:
-            trend = "bearish"
-        else:
-            trend = "neutral"
-        
-        return StochasticResult(k, d, overbought, oversold, trend)
-    
+        for end in range(period, len(prices) + 1):
+            window_high = max(highs[end-period:end])
+            window_low = min(lows[end-period:end])
+            k_values.append(50.0 if window_high == window_low else (prices[end-1] - window_low) / (window_high - window_low) * 100.0)
+        k = k_values[-1]
+        d = sum(k_values[-3:]) / min(3, len(k_values))
+        trend = "bullish" if k > d and k > 50 else "bearish" if k < d and k < 50 else "neutral"
+        return StochasticResult(k, d, k > 80, k < 20, trend, True)
     def _calculate_vwap(self, symbol: str) -> VWAPResult:
-        """Calculate VWAP (Volume Weighted Average Price)"""
+        """Calculate VWAP using the OHLC typical price, not close-only prices."""
         prices = self.price_history[symbol]
         volumes = self.volume_history[symbol]
-        
-        if len(prices) == 0 or len(volumes) == 0:
-            return VWAPResult(0.0, 0.0, "neutral")
-        
-        # Calculate VWAP
-        total_volume = sum(volumes)
-        if total_volume == 0:
-            return VWAPResult(0.0, 0.0, "neutral")
-        
-        vwap = sum(p * v for p, v in zip(prices, volumes)) / total_volume
-        
-        # Calculate deviation from current price
-        current_price = prices[-1]
-        deviation = ((current_price - vwap) / vwap) * 100 if vwap > 0 else 0
-        
-        # Determine trend
-        if deviation > 1:
-            trend = "above_vwap"
-        elif deviation < -1:
-            trend = "below_vwap"
-        else:
-            trend = "neutral"
-        
-        return VWAPResult(vwap, deviation, trend)
-    
+        highs = self.high_history.get(symbol, [])
+        lows = self.low_history.get(symbol, [])
+        if not prices or len(volumes) != len(prices) or len(highs) != len(prices) or len(lows) != len(prices):
+            return VWAPResult(None, None, "UNAVAILABLE", False)
+        total_volume = sum(max(0.0, float(v)) for v in volumes)
+        if total_volume <= 0:
+            return VWAPResult(None, None, "UNAVAILABLE", False)
+        typical = [(high + low + close) / 3.0 for high, low, close in zip(highs, lows, prices)]
+        vwap = sum(price * volume for price, volume in zip(typical, volumes)) / total_volume
+        deviation = (prices[-1] - vwap) / vwap * 100.0 if vwap else None
+        if deviation is None:
+            return VWAPResult(None, None, "UNAVAILABLE", False)
+        trend = "above_vwap" if deviation > 1 else "below_vwap" if deviation < -1 else "neutral"
+        return VWAPResult(vwap, deviation, trend, True)
     def _calculate_obv(self, symbol: str) -> OBVResult:
         """Calculate OBV (On Balance Volume)"""
         prices = self.price_history[symbol]
         volumes = self.volume_history[symbol]
         
         if len(prices) < 2 or len(volumes) < 2:
-            return OBVResult(0.0, "neutral", "neutral")
+            return OBVResult(None, "UNAVAILABLE", "UNAVAILABLE", False)
         
         # Calculate OBV
         obv_values = [0.0]
@@ -664,7 +584,7 @@ class TechnicalIndicators:
         else:
             volume_trend = "neutral"
         
-        return OBVResult(obv, obv_trend, volume_trend)
+        return OBVResult(obv, obv_trend, volume_trend, True)
     
     def _calculate_ichimoku(self, symbol: str) -> IchimokuResult:
         """Calculate Ichimoku Cloud"""
@@ -673,7 +593,7 @@ class TechnicalIndicators:
         lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 26:
-            return IchimokuResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "neutral", 0.0, 0.0)
+            return IchimokuResult(None, None, None, None, None, None, "UNAVAILABLE", None, None)
         
         # Calculate Tenkan-sen (Conversion Line) - 9-period
         recent_highs = highs[-9:] if len(highs) >= 9 else highs
@@ -726,7 +646,7 @@ class TechnicalIndicators:
         """Calculate Fibonacci retracement levels"""
         prices = self.price_history[symbol]
         if len(prices) < 10:
-            return FibonacciResult({0.0: 0.0, 0.236: 0.0, 0.382: 0.0, 0.5: 0.0, 0.618: 0.0, 0.786: 0.0}, 0.0, "none", 0.0)
+            return FibonacciResult({}, None, "UNAVAILABLE", None)
         
         # Find recent swing high and low
         recent_prices = prices[-10:]  # Last 10 price points
@@ -766,7 +686,7 @@ class TechnicalIndicators:
         lows = self.low_history.get(symbol) or prices
         
         if len(prices) < 1:
-            return PivotPointsResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "none")
+            return PivotPointsResult(None, None, None, None, None, None, None, None, "UNAVAILABLE")
         
         # Calculate pivot point
         current_high = highs[-1] if highs else prices[-1]

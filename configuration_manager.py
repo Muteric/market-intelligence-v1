@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuration Manager for AI Trading Intelligence Bot
 Handles all configurable settings including portfolio parameters, trading rules, and asset configurations.
 """
@@ -124,6 +124,9 @@ class SystemConfig:
     goldprice_dev_enabled: bool = True
     itick_enabled: bool = True
     mt5_enabled: bool = True
+    mt5_mode: str = "READ_ONLY"
+    mt5_terminal_path: str = ""
+    mt5_btcusd_symbol: str = "BTCUSD"
     mt5_xauusd_symbol: str = "XAUUSD"
     xau_max_stale_seconds: int = 60
     max_price_deviation_percent: float = 1.0
@@ -131,6 +134,12 @@ class SystemConfig:
     price_consensus_method: str = "median"
     execution_mode: str = "simulation"
     notification_dedupe_seconds: int = 900
+    signal_min_score: float = 65.0
+    signal_min_confirmations: int = 3
+    simulation_mode: str = "MODERATE"
+    simulation_stop_loss_pips: float = 50.0
+    trailing_activation_pips: float = 20.0
+    trailing_step_pips: float = 10.0
     def __post_init__(self) -> None:
         self.max_backup_files = _coerce_int("max_backup_files", self.max_backup_files)
         self.goldapi_min_interval_seconds = _coerce_int("goldapi_min_interval_seconds", self.goldapi_min_interval_seconds)
@@ -202,7 +211,10 @@ class ConfigurationManager:
             goldapi_enabled=_environment_value('GOLDAPI_ENABLED', 'true').lower() == 'true',
             goldprice_dev_enabled=_environment_value('GOLDPRICEDEV_ENABLED', 'true').lower() == 'true',
             itick_enabled=_environment_value('ITICK_ENABLED', 'true').lower() == 'true',
-            mt5_enabled=_environment_value('MT5_ENABLED', 'true').lower() == 'true',
+            mt5_enabled=_environment_value('MT5_ENABLED', 'false').lower() == 'true',
+            mt5_mode=_environment_value('MT5_MODE', 'READ_ONLY'),
+            mt5_terminal_path=_environment_value('MT5_TERMINAL_PATH', ''),
+            mt5_btcusd_symbol=_environment_value('MT5_BTCUSD_SYMBOL', 'BTCUSD'),
             mt5_xauusd_symbol=_environment_value('MT5_XAUUSD_SYMBOL', 'XAUUSD'),
             xau_max_stale_seconds=int(_environment_value('XAU_MAX_STALE_SECONDS', '60')),
             max_price_deviation_percent=float(_environment_value('MAX_PRICE_DEVIATION_PERCENT', '1.0')),
@@ -288,7 +300,10 @@ class ConfigurationManager:
             goldapi_min_interval_seconds=int(system_data.get('goldapi_min_interval_seconds', 300)),
             goldprice_dev_enabled=bool(system_data.get('goldprice_dev_enabled', True)),
             itick_enabled=bool(system_data.get('itick_enabled', True)),
-            mt5_enabled=bool(system_data.get('mt5_enabled', True)),
+            mt5_enabled=bool(system_data.get('mt5_enabled', False)),
+            mt5_mode=system_data.get('mt5_mode', 'READ_ONLY'),
+            mt5_terminal_path=system_data.get('mt5_terminal_path', ''),
+            mt5_btcusd_symbol=system_data.get('mt5_btcusd_symbol', 'BTCUSD'),
             mt5_xauusd_symbol=system_data.get('mt5_xauusd_symbol', 'XAUUSD'),
             xau_max_stale_seconds=int(system_data.get('xau_max_stale_seconds', 60)),
             max_price_deviation_percent=float(system_data.get('max_price_deviation_percent', 1.0)),

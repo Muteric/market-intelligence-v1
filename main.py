@@ -1,4 +1,4 @@
-"""
+﻿"""
 AI Trading Intelligence Bot v2.0 - Main Application
 Comprehensive trading system for BTCUSD and XAUUSD with modular architecture.
 """
@@ -30,6 +30,8 @@ from multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from ai_decision_engine import AIDecisionEngine
 from trade_execution_simulator import TradeExecutionSimulator
 from reliability_manager import ReliabilityManager
+from mt5_bridge import MT5Connection, MT5MarketData, MT5AccountReader, MT5HealthMonitor, MT5SymbolMapper
+from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, build_trade_candidate, calculate_signal_score)
 
 # Set up logging
 logging.basicConfig(
@@ -84,6 +86,9 @@ class AITradingIntelligenceBot:
         self.last_reports: Dict[str, str] = {}
         self.telegram_delivery_failures = 0
         self._telegram_message_times: Dict[str, datetime] = {}
+        self.mt5_health_monitor: Optional[MT5HealthMonitor] = None
+        self.outcome_tracker = SignalOutcomeTracker()
+        self.last_trade_candidates: Dict[str, Any] = {}
         
         # Initialize components
         self._initialize_components()
@@ -152,6 +157,8 @@ class AITradingIntelligenceBot:
             self.portfolio_manager,
             self.config.system
         )
+        self.telegram_formatter.outcome_tracker = self.outcome_tracker
+        self.telegram_formatter.mt5_health_monitor = self.mt5_health_monitor
         
         # Load existing data from storage
         self._load_existing_data()
@@ -163,6 +170,11 @@ class AITradingIntelligenceBot:
         self.market_data_aggregator = MarketDataAggregator(system_config=self.config.system)
         provider_status = self.market_data_aggregator.get_provider_status()
         logger.info("Market data engine initialized")
+        mt5_connection = MT5Connection(enabled=self.config.system.mt5_enabled, mode=self.config.system.mt5_mode, terminal_path=self.config.system.mt5_terminal_path)
+        mt5_market = MT5MarketData(mt5_connection, MT5SymbolMapper.from_environment(self.config.system))
+        self.mt5_health_monitor = MT5HealthMonitor(mt5_connection, mt5_market, MT5AccountReader(mt5_connection))
+        self.telegram_formatter.mt5_health_monitor = self.mt5_health_monitor
+        logger.info("MT5 provider: %s", "ENABLED" if self.config.system.mt5_enabled else "UNAVAILABLE (disabled)")
         logger.info("Available providers: %s", ", ".join(k for k, v in provider_status.items() if v == "configured") or "none")
         logger.info("Unavailable providers: %s", ", ".join(k for k, v in provider_status.items() if v != "configured") or "none")
         
@@ -359,6 +371,38 @@ class AITradingIntelligenceBot:
                         current_price, previous_price,
                         data_confidence=self.market_data_status[symbol].get("confidence", 0.0),
                     )
+                    structure_values = list((getattr(multi_timeframe, "market_structure", None) or {}).values())
+                    structure_direction = next((item.get("overall") for item in structure_values if item.get("overall") in {"bullish", "bearish"}), None)
+                    pattern_values = [pattern for rows in (getattr(multi_timeframe, "patterns", None) or {}).values() for pattern in rows]
+                    pattern_direction = next((item.get("direction") for item in pattern_values if item.get("direction") in {"bullish", "bearish"}), None)
+                    validation = self._get_validation_result(symbol)
+                    provider_count = len(getattr(validation, "provider_prices", {}) or {}) if validation else 0
+                    provider_total = max(1, int(self.market_data_status[symbol].get("provider_total", provider_count)))
+                    score = calculate_signal_score(
+                        ai_decision.decision,
+                        trend=ai_decision.trend,
+                        momentum=ai_decision.momentum,
+                        mtf_alignment=getattr(multi_timeframe, "confidence_score", None),
+                        structure_direction=structure_direction,
+                        pattern_direction=pattern_direction,
+                        volatility=ai_decision.volatility,
+                        ohlcv_confidence=self.market_data_status[symbol].get("confidence"),
+                        spot_consensus=validation.confidence_score if validation else None,
+                        provider_diversity=provider_count / provider_total,
+                    )
+                    candidate = build_trade_candidate(
+                        symbol, ai_decision.decision, current_price, score,
+                        mode=SimulationMode.normalize(self.config.system.simulation_mode),
+                        spec=DEFAULT_PIP_SPECS.get(symbol),
+                        stop_loss_pips=self.config.system.simulation_stop_loss_pips,
+                        min_score=self.config.system.signal_min_score,
+                        min_confirmations=self.config.system.signal_min_confirmations,
+                    )
+                    ai_decision.signal_score = score.score
+                    ai_decision.trade_candidate = candidate
+                    self.last_trade_candidates[symbol] = candidate
+                    if ai_decision.decision in {"BUY", "SELL"}:
+                        self.outcome_tracker.record(candidate, {"trend": ai_decision.trend, "regime": getattr(ai_decision.market_regime, "regime", None), "patterns": pattern_values})
                     signal_result = self.signal_engine.generate_signal(
                         symbol,
                         market_analysis,
@@ -373,6 +417,7 @@ class AITradingIntelligenceBot:
                     signal_result.risk_metrics = ai_decision.risk_metrics
                     signal_result.portfolio_metrics = self.portfolio_manager.update_portfolio()
                     signal_result.data_quality = self.market_data_status.get(symbol, {})
+                    signal_result.trade_candidate = candidate
                 except TypeError as exc:
                     logger.exception("%s INTERNAL_ERROR during technical/decision path: %s", symbol, exc)
                     self.market_data_status[symbol] = {
