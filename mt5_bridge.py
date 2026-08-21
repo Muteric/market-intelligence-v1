@@ -1,4 +1,4 @@
-﻿"""Optional, read-only MetaTrader 5 bridge for Windows terminals.
+"""Optional, read-only MetaTrader 5 bridge for Windows terminals.
 
 The official MetaTrader5 package is imported conditionally.  This module never
 places, modifies, or closes orders; READ_ONLY is enforced by the execution
@@ -251,6 +251,10 @@ class TradeExecutionInterface:
 
 class PaperExecutionAdapter(TradeExecutionInterface):
     def __init__(self, simulator: Any = None): self.simulator = simulator
+    def open_candidate(self, candidate: Any, market_analysis: Any = None):
+        if self.simulator is None:
+            return None
+        return self.simulator.execute_candidate(candidate, market_analysis)
     def open_position(self, *args, **kwargs):
         if self.simulator is None: return None
         return self.simulator.execute_trade(*args, **kwargs)

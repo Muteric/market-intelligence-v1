@@ -136,12 +136,19 @@ class SystemConfig:
     notification_dedupe_seconds: int = 900
     signal_min_score: float = 65.0
     signal_min_confirmations: int = 3
-    simulation_mode: str = "MODERATE"
+    simulation_mode: str = "AUTO"
+    trading_mode_enabled: bool = True
+    aggressive_min_pips: float = 10.0
+    aggressive_max_pips: float = 25.0
+    moderate_min_pips: float = 20.0
+    moderate_max_pips: float = 50.0
+    slow_min_pips: float = 100.0
+    slow_max_pips: float = 200.0
     simulation_stop_loss_pips: float = 50.0
     trailing_activation_pips: float = 20.0
     trailing_step_pips: float = 10.0
     candidate_watch_score: float = 50.0
-    minimum_risk_reward: float = 0.5
+    minimum_risk_reward: float = 1.5
     aggressive_min_score: float = 70.0
     moderate_min_score: float = 65.0
     slow_min_score: float = 75.0
@@ -156,6 +163,9 @@ class SystemConfig:
         self.max_price_deviation_percent = _coerce_float("max_price_deviation_percent", self.max_price_deviation_percent)
         self.min_valid_providers = _coerce_int("min_valid_providers", self.min_valid_providers)
         self.notification_dedupe_seconds = _coerce_int("notification_dedupe_seconds", self.notification_dedupe_seconds)
+        self.trading_mode_enabled = _coerce_bool("trading_mode_enabled", self.trading_mode_enabled)
+        for name in ("aggressive_min_pips", "aggressive_max_pips", "moderate_min_pips", "moderate_max_pips", "slow_min_pips", "slow_max_pips"):
+            setattr(self, name, _coerce_float(name, getattr(self, name)))
         self.signal_min_score = _coerce_float("signal_min_score", self.signal_min_score)
         self.signal_min_confirmations = _coerce_int("signal_min_confirmations", self.signal_min_confirmations)
         self.simulation_stop_loss_pips = _coerce_float("simulation_stop_loss_pips", self.simulation_stop_loss_pips)
@@ -336,12 +346,19 @@ class ConfigurationManager:
             notification_dedupe_seconds=int(system_data.get('notification_dedupe_seconds', 900)),
             signal_min_score=float(system_data.get('signal_min_score', 65.0)),
             signal_min_confirmations=int(system_data.get('signal_min_confirmations', 3)),
-            simulation_mode=system_data.get('simulation_mode', 'MODERATE'),
+            simulation_mode=system_data.get('simulation_mode', 'AUTO'),
+            trading_mode_enabled=bool(system_data.get('trading_mode_enabled', True)),
+            aggressive_min_pips=float(system_data.get('aggressive_min_pips', 10.0)),
+            aggressive_max_pips=float(system_data.get('aggressive_max_pips', 25.0)),
+            moderate_min_pips=float(system_data.get('moderate_min_pips', 20.0)),
+            moderate_max_pips=float(system_data.get('moderate_max_pips', 50.0)),
+            slow_min_pips=float(system_data.get('slow_min_pips', 100.0)),
+            slow_max_pips=float(system_data.get('slow_max_pips', 200.0)),
             simulation_stop_loss_pips=float(system_data.get('simulation_stop_loss_pips', 50.0)),
             trailing_activation_pips=float(system_data.get('trailing_activation_pips', 20.0)),
             trailing_step_pips=float(system_data.get('trailing_step_pips', 10.0)),
             candidate_watch_score=float(system_data.get('candidate_watch_score', 50.0)),
-            minimum_risk_reward=float(system_data.get('minimum_risk_reward', 0.5)),
+            minimum_risk_reward=float(system_data.get('minimum_risk_reward', 1.5)),
             aggressive_min_score=float(system_data.get('aggressive_min_score', 70.0)),
             moderate_min_score=float(system_data.get('moderate_min_score', 65.0)),
             slow_min_score=float(system_data.get('slow_min_score', 75.0)),

@@ -30,8 +30,8 @@ from multi_timeframe_analyzer import MultiTimeframeAnalyzer
 from ai_decision_engine import AIDecisionEngine
 from trade_execution_simulator import TradeExecutionSimulator
 from reliability_manager import ReliabilityManager
-from mt5_bridge import MT5Connection, MT5MarketData, MT5AccountReader, MT5HealthMonitor, MT5SymbolMapper
-from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, build_trade_candidate, calculate_signal_score, infer_candidate_direction, select_simulation_mode)
+from mt5_bridge import MT5Connection, MT5MarketData, MT5AccountReader, MT5HealthMonitor, MT5SymbolMapper, PaperExecutionAdapter
+from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, TrailingStopManager, build_trade_candidate, calculate_signal_score, infer_candidate_direction, select_simulation_mode)
 
 # Set up logging
 logging.basicConfig(
@@ -80,6 +80,7 @@ class AITradingIntelligenceBot:
         self.multi_timeframe_analyzer: Optional[MultiTimeframeAnalyzer] = None
         self.ai_decision_engine: Optional[AIDecisionEngine] = None
         self.trade_execution_simulator: Optional[TradeExecutionSimulator] = None
+        self.paper_execution_adapter: Optional[PaperExecutionAdapter] = None
         self.reliability_manager: Optional[ReliabilityManager] = None
         self.market_data_status: Dict[str, Dict[str, Any]] = {}
         self.market_snapshots: Dict[str, Any] = {}
@@ -356,7 +357,19 @@ class AITradingIntelligenceBot:
                 if market_data is None:
                     unavailable_assets.append(symbol)
                     continue
-                current_price, previous_price = market_data
+                current_price, previous_price = market_data                # Update persisted paper positions before evaluating this cycle's candidate.
+                closed_paper_positions = self.outcome_tracker.update_open_positions(
+                    symbol, current_price, DEFAULT_PIP_SPECS.get(symbol),
+                    TrailingStopManager(self.config.system.trailing_activation_pips, self.config.system.trailing_step_pips),
+                ) if DEFAULT_PIP_SPECS.get(symbol) else []
+                for closed_position in closed_paper_positions:
+                    paper_trade_id = closed_position.get("paper_trade_id")
+                    if paper_trade_id and self.trade_execution_simulator is not None:
+                        self.trade_execution_simulator.close_trade(
+                            symbol, paper_trade_id, current_price, closed_position.get("exit_reason", "SIMULATION_EXIT")
+                        )
+                if self.trade_execution_simulator is not None:
+                    self.asset_manager.update_floating_pnl(symbol, current_price)
                 
                 # Analyze market with enhanced technical indicators
                 market_analysis = analyzer.analyze_market(
@@ -405,11 +418,13 @@ class AITradingIntelligenceBot:
                         selected_mode = SimulationMode.normalize(configured_mode)
                     candidate = build_trade_candidate(
                         symbol, evidence_direction, current_price, score,
+                        min_score=(self.config.system.aggressive_min_score if selected_mode == SimulationMode.AGGRESSIVE else self.config.system.slow_min_score if selected_mode == SimulationMode.SWING else self.config.system.moderate_min_score),
+                        min_confirmations=(self.config.system.aggressive_min_confirmations if selected_mode == SimulationMode.AGGRESSIVE else self.config.system.slow_min_confirmations if selected_mode == SimulationMode.SWING else self.config.system.moderate_min_confirmations),
                         mode=selected_mode,
                         spec=DEFAULT_PIP_SPECS.get(symbol),
                         stop_loss_pips=self.config.system.simulation_stop_loss_pips,
-                        min_score=(self.config.system.aggressive_min_score if self.config.system.simulation_mode.upper() == "AGGRESSIVE" else self.config.system.slow_min_score if self.config.system.simulation_mode.upper() in {"SLOW", "SWING"} else self.config.system.moderate_min_score),
-                        min_confirmations=(self.config.system.aggressive_min_confirmations if self.config.system.simulation_mode.upper() == "AGGRESSIVE" else self.config.system.slow_min_confirmations if self.config.system.simulation_mode.upper() in {"SLOW", "SWING"} else self.config.system.moderate_min_confirmations),
+                        # thresholds are mode-specific above
+                        # confirmation thresholds are mode-specific above
                         watch_score=self.config.system.candidate_watch_score,
                         minimum_risk_reward=self.config.system.minimum_risk_reward,
                         structure_confirmed=not (structure_direction and pattern_direction and structure_direction != pattern_direction),
@@ -418,12 +433,23 @@ class AITradingIntelligenceBot:
                     ai_decision.trade_candidate = candidate
                     self.last_trade_candidates[symbol] = candidate
                     if candidate.direction in {"BUY", "SELL", "WATCH"}:
-                        self.outcome_tracker.record(candidate, {"trend": ai_decision.trend, "regime": getattr(getattr(ai_decision.market_regime, "regime", None), "value", getattr(ai_decision.market_regime, "regime", None)), "patterns": pattern_values})
+                        record_id = self.outcome_tracker.record(candidate, {"trend": ai_decision.trend, "regime": getattr(getattr(ai_decision.market_regime, "regime", None), "value", getattr(ai_decision.market_regime, "regime", None)), "patterns": pattern_values})
+                        if candidate.accepted:
+                            reversed_positions = self.outcome_tracker.close_opposite_positions(symbol, candidate.direction, current_price, DEFAULT_PIP_SPECS[symbol])
+                            for reversed_position in reversed_positions:
+                                reversal_trade_id = reversed_position.get("paper_trade_id")
+                                if reversal_trade_id and self.trade_execution_simulator is not None:
+                                    self.trade_execution_simulator.close_trade(symbol, reversal_trade_id, current_price, "SIGNAL_REVERSAL")
+                            paper_trade = self.paper_execution_adapter.open_candidate(candidate, market_analysis) if self.paper_execution_adapter is not None else None
+                            opened = self.outcome_tracker.open_candidate(record_id)
+                            if opened is not None and paper_trade is not None:
+                                opened.update({"paper_trade_id": paper_trade.id, "allocated_capital": paper_trade.capital_used, "notional_value": paper_trade.notional_value, "leverage": paper_trade.leverage, "quantity": paper_trade.position_size})
+                                self.outcome_tracker._save()
                     signal_result = self.signal_engine.generate_signal(
                         symbol,
                         market_analysis,
-                        decision_override=ai_decision.decision,
-                        execute=execute_trades,
+                        decision_override=(candidate.direction if candidate.accepted else "HOLD"),
+                        execute=(execute_trades and not candidate.accepted),
                     )
                     self.asset_manager.update_floating_pnl(symbol, current_price)
                     signal_result.ai_decision_result = ai_decision

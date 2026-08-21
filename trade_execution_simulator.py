@@ -96,6 +96,26 @@ class TradeExecutionSimulator:
         self.slippage_model = SlippageModel()
         self.commission_model = CommissionModel()
     
+    def execute_candidate(self, candidate: Any, market_analysis: Any = None) -> Optional[Trade]:
+        """Open an already risk-validated simulation candidate."""
+        if not getattr(candidate, "accepted", False) or getattr(candidate, "risk_validation", "FAIL") != "PASS":
+            return None
+        trade = Trade(
+            id=str(uuid.uuid4()),
+            asset=candidate.asset,
+            direction=candidate.direction,
+            entry_price=float(candidate.entry),
+            entry_time=datetime.now(timezone.utc),
+            leverage=self.portfolio_config.leverage,
+            stop_loss_price=float(candidate.stop_loss),
+            take_profit_price=float(candidate.take_profit),
+            status=TradeStatus.OPEN.value,
+        )
+        if self.asset_manager.add_open_position(candidate.asset, trade):
+            logger.info("Paper position opened: %s %s %s", trade.id, candidate.asset, candidate.direction)
+            return trade
+        logger.info("Paper position rejected by portfolio limits: %s", candidate.asset)
+        return None
     def execute_trade(self, symbol: str, direction: str, current_price: float, 
                      confidence: float, market_analysis: Any) -> Optional[Trade]:
         """Execute a trade with comprehensive risk checks"""

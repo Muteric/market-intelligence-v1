@@ -18,6 +18,7 @@ class SimulationMode(str, Enum):
     AGGRESSIVE = "AGGRESSIVE"
     MODERATE = "MODERATE"
     SWING = "SWING"
+    NONE = "NONE"
 
     @classmethod
     def normalize(cls, value: str | "SimulationMode") -> "SimulationMode":
@@ -56,6 +57,7 @@ MODE_TARGET_PIPS = {
     SimulationMode.AGGRESSIVE: (10.0, 25.0),
     SimulationMode.MODERATE: (20.0, 50.0),
     SimulationMode.SWING: (100.0, 200.0),
+    SimulationMode.NONE: (0.0, 0.0),
 }
 
 
@@ -77,6 +79,9 @@ class TradeCandidate:
     accepted: bool = False
     rejection_reason: Optional[str] = None
     status: str = "NO-TRADE"
+    candidate_status: str = "NO_TRADE"
+    risk_validation: str = "FAIL"
+    reason_code: str = "NO_DIRECTION"
     lifecycle_state: str = "CANDIDATE"
     trailing_movements: List[Dict[str, Any]] = field(default_factory=list)
     exit: Optional[float] = None
@@ -203,6 +208,8 @@ def select_simulation_mode(
     mtf_alignment: Optional[float] = None, volatility: Optional[str] = None,
 ) -> SimulationMode:
     """Select a simulation horizon from evidence; never changes execution rules."""
+    if score.direction not in {"BUY", "SELL"}:
+        return SimulationMode.NONE
     alignment = _finite(mtf_alignment) or 0.0
     if alignment > 1:
         alignment /= 5.0
@@ -230,6 +237,7 @@ def build_trade_candidate(
     watch_score: float = 50.0,
     minimum_risk_reward: float = 0.5,
     structure_confirmed: bool = True,
+    target_pips: Optional[float] = None,
 ) -> TradeCandidate:
     mode = SimulationMode.normalize(mode)
     spec = spec or DEFAULT_PIP_SPECS.get(asset)
@@ -242,6 +250,8 @@ def build_trade_candidate(
     accepted = candidate_direction in {"BUY", "SELL"} and entry_value is not None
     status = "NO-TRADE"
     rejection: Optional[str] = None
+    risk_validation = "FAIL"
+    reason_code = "NO_DIRECTION"
     if entry_value is None:
         rejection = "REJECTED — entry price unavailable"
     elif not structure_confirmed:
@@ -250,39 +260,59 @@ def build_trade_candidate(
     elif candidate_direction == "WATCH":
         status = "WATCH" if score.score >= watch_score else "NO-TRADE"
         rejection = "WATCH — setup developing" if status == "WATCH" else "REJECTED — direction unavailable"
+        reason_code = "NO_DIRECTION"
         accepted = False
     elif score.score < min_score:
         accepted = False
         rejection = f"REJECTED — score below minimum ({score.score:.1f} < {min_score:.1f})"
+        reason_code = "LOW_CONFIDENCE"
     elif len(confirmations) < min_confirmations:
         accepted = False
         rejection = f"REJECTED — insufficient MTF confirmation ({len(confirmations)} < {min_confirmations})"
+        reason_code = "MTF_CONFLICT"
 
     stop = target = expected = rr = None
+    # risk_validation initialized above
+    reason_code = "NO_DIRECTION"
     if candidate_direction in {"BUY", "SELL"} and entry_value is not None and spec is not None:
         low, high = MODE_TARGET_PIPS[mode]
-        target_pips = (low + high) / 2.0
+        target_pips = float(target_pips) if target_pips is not None else low + ((high - low) * (score.score / 100.0))
+        target_pips = max(low, min(high, target_pips))
         stop_delta = spec.price_delta(stop_loss_pips)
         target_delta = spec.price_delta(target_pips)
         stop = entry_value - stop_delta if candidate_direction == "BUY" else entry_value + stop_delta
         target = entry_value + target_delta if candidate_direction == "BUY" else entry_value - target_delta
         expected = target_delta
         rr = target_pips / stop_loss_pips if stop_loss_pips > 0 else None
-        if rr is not None and rr < minimum_risk_reward:
+        if stop is None or (candidate_direction == "BUY" and stop >= entry_value) or (candidate_direction == "SELL" and stop <= entry_value):
+            accepted = False
+            rejection = "REJECTED — invalid stop-loss distance"
+            reason_code = "INVALID_STOP"
+        elif (candidate_direction == "BUY" and target <= entry_value) or (candidate_direction == "SELL" and target >= entry_value):
+            accepted = False
+            rejection = "REJECTED — invalid target"
+            reason_code = "INVALID_TARGET"
+        elif rr is not None and rr < minimum_risk_reward:
             accepted = False
             rejection = f"REJECTED — risk/reward below minimum ({rr:.2f} < {minimum_risk_reward:.2f})"
+            risk_validation = "FAIL"
+            reason_code = "RR_BELOW_MINIMUM"
         elif accepted:
             status = "BUY" if candidate_direction == "BUY" else "SELL"
+    candidate_status = "READY" if accepted else "WATCH" if status == "WATCH" else "REJECTED" if rejection else "NO_TRADE"
     if accepted:
         status = candidate_direction
         rejection = None
+        risk_validation = "PASS"
+        reason_code = "READY"
     return TradeCandidate(
         asset=asset, direction=candidate_direction, confidence=score.score / 100.0,
         mode=mode.value, entry=entry_value, stop_loss=stop, take_profit=target,
         expected_move=expected, risk_reward=rr, reasons=reasons,
         supporting_timeframes=["5M", "15M", "1H", "4H", "Daily"] if "multi_timeframe" in confirmations else [],
         supporting_indicators=confirmations, signal_score=score.score,
-        accepted=accepted, rejection_reason=rejection, status=status,
+        accepted=accepted, rejection_reason=rejection, status=status, candidate_status=candidate_status,
+        risk_validation=risk_validation, reason_code=reason_code,
     )
 
 class TrailingStopManager:
@@ -339,6 +369,10 @@ class SignalOutcomeTracker:
         record = next((item for item in self.records if item.get("id") == record_id), None)
         if record is not None and record.get("accepted"):
             record["lifecycle_state"] = "OPEN"
+            record["status"] = "OPEN"
+            record["initial_stop_loss"] = record.get("stop_loss")
+            record["current_stop_loss"] = record.get("stop_loss")
+            record.setdefault("entry_timestamp", record.get("created_at"))
             self._save()
         return record
 
@@ -362,9 +396,59 @@ class SignalOutcomeTracker:
             return record
         entry = float(record["entry"])
         movement = (float(exit_price) - entry) if record.get("direction") == "BUY" else (entry - float(exit_price))
-        record.update({"exit": float(exit_price), "pnl": movement, "outcome": "WIN" if movement > 0 else "LOSS" if movement < 0 else "FLAT", "exit_reason": reason, "lifecycle_state": "CLOSED", "resolved": True})
+        stop_distance = abs(entry - float(record.get("initial_stop_loss", record.get("stop_loss", entry))))
+        pips = movement / spec.pip_size
+        record.update({"exit": float(exit_price), "exit_price": float(exit_price), "pnl": movement, "realized_pnl": movement, "pips_realized": pips, "R_multiple": movement / stop_distance if stop_distance else None, "outcome": "WIN" if movement > 0 else "LOSS" if movement < 0 else "BREAKEVEN", "exit_reason": reason, "status": "CLOSED", "lifecycle_state": "CLOSED", "resolved": True, "exit_timestamp": datetime.now(timezone.utc).isoformat()})
         self._save()
         return record
+    def update_open_positions(self, asset: str, current_price: float, spec: PipSpecification, manager: Optional[TrailingStopManager] = None) -> List[Dict[str, Any]]:
+        """Update persisted paper positions and resolve TP/SL without broker execution."""
+        closed: List[Dict[str, Any]] = []
+        manager = manager or TrailingStopManager()
+        for record in self.records:
+            if record.get("asset") != asset or record.get("lifecycle_state") not in {"OPEN", "TRAILING"}:
+                continue
+            entry = _finite(record.get("entry"))
+            price = _finite(current_price)
+            if entry is None or price is None:
+                continue
+            direction = str(record.get("direction", "")).upper()
+            record["current_price"] = price
+            if direction == "BUY":
+                record["highest_favorable_price"] = max(price, _finite(record.get("highest_favorable_price")) or entry)
+                record["lowest_favorable_price"] = min(price, _finite(record.get("lowest_favorable_price")) or entry)
+            elif direction == "SELL":
+                record["highest_favorable_price"] = max(price, _finite(record.get("highest_favorable_price")) or entry)
+                record["lowest_favorable_price"] = min(price, _finite(record.get("lowest_favorable_price")) or entry)
+            stop = _finite(record.get("current_stop_loss", record.get("stop_loss")))
+            if stop is not None:
+                updated = manager.update(entry, price, stop, direction, spec)
+                record["current_stop_loss"] = updated
+                record["stop_loss"] = updated
+                if updated != stop:
+                    record.setdefault("trailing_movements", []).append({"price": price, "stop": updated, "timestamp": datetime.now(timezone.utc).isoformat()})
+                    record["lifecycle_state"] = "TRAILING"
+            target = _finite(record.get("take_profit"))
+            stop = _finite(record.get("current_stop_loss", record.get("stop_loss")))
+            hit_tp = target is not None and ((direction == "BUY" and price >= target) or (direction == "SELL" and price <= target))
+            hit_sl = stop is not None and ((direction == "BUY" and price <= stop) or (direction == "SELL" and price >= stop))
+            if hit_sl or hit_tp:
+                closed_record = self.close_candidate(record.get("id"), price, spec, "STOP_LOSS" if hit_sl else "TAKE_PROFIT")
+                if closed_record is not None:
+                    closed.append(closed_record)
+        self._save()
+        return closed
+    def close_opposite_positions(self, asset: str, direction: str, exit_price: float, spec: PipSpecification) -> List[Dict[str, Any]]:
+        """Close open paper positions only for a validated opposite candidate."""
+        closed: List[Dict[str, Any]] = []
+        opposite = "SELL" if str(direction).upper() == "BUY" else "BUY"
+        for record in list(self.records):
+            if record.get("asset") == asset and record.get("direction") == opposite and record.get("lifecycle_state") in {"OPEN", "TRAILING"}:
+                item = self.close_candidate(record.get("id"), exit_price, spec, "SIGNAL_REVERSAL")
+                if item is not None:
+                    closed.append(item)
+        return closed
+
     def resolve(self, record_id: str, prices: Iterable[float], spec: PipSpecification) -> Optional[Dict[str, Any]]:
         record = next((item for item in self.records if item.get("id") == record_id), None)
         if record is None or record.get("resolved"):
@@ -388,6 +472,10 @@ class SignalOutcomeTracker:
         enabled = len(resolved) >= minimum
         return {
             "candidates_evaluated": len(self.records),
+            "candidates_generated": len(self.records),
+            "candidates_rejected": sum(1 for item in self.records if item.get("candidate_status") == "REJECTED"),
+            "candidates_ready": sum(1 for item in self.records if item.get("candidate_status") == "READY"),
+            "simulated_trades_opened": sum(1 for item in self.records if item.get("paper_trade_id")),
             "outcomes_resolved": len(resolved),
             "win_rate": len(wins) / len(resolved) if resolved else None,
             "adaptive_weighting_enabled": enabled,
