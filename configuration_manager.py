@@ -164,6 +164,19 @@ class SystemConfig:
     approval_timeout_seconds: int = 300
     max_pending_approvals: int = 3
     max_entry_deviation_pips: float = 5.0
+    aggressive_min_stop_pips: float = 5.0
+    aggressive_max_stop_pips: float = 15.0
+    moderate_min_stop_pips: float = 10.0
+    moderate_max_stop_pips: float = 30.0
+    slow_min_stop_pips: float = 40.0
+    slow_max_stop_pips: float = 75.0
+    aggressive_breakeven_trigger: float = 8.0
+    aggressive_trail_step: float = 5.0
+    moderate_breakeven_trigger: float = 15.0
+    moderate_trail_step: float = 10.0
+    slow_breakeven_trigger: float = 25.0
+    slow_trail_step: float = 15.0
+    max_future_timestamp_seconds: int = 120
     bot_runtime_mode: str = "DESKTOP_TEST"
     def __post_init__(self) -> None:
         self.max_backup_files = _coerce_int("max_backup_files", self.max_backup_files)
@@ -192,6 +205,9 @@ class SystemConfig:
         self.approval_timeout_seconds = _coerce_int("approval_timeout_seconds", self.approval_timeout_seconds)
         self.max_pending_approvals = _coerce_int("max_pending_approvals", self.max_pending_approvals)
         self.max_entry_deviation_pips = _coerce_float("max_entry_deviation_pips", self.max_entry_deviation_pips)
+        for name in ("aggressive_min_stop_pips", "aggressive_max_stop_pips", "moderate_min_stop_pips", "moderate_max_stop_pips", "slow_min_stop_pips", "slow_max_stop_pips", "aggressive_breakeven_trigger", "aggressive_trail_step", "moderate_breakeven_trigger", "moderate_trail_step", "slow_breakeven_trigger", "slow_trail_step"):
+            setattr(self, name, _coerce_float(name, getattr(self, name)))
+        self.max_future_timestamp_seconds = _coerce_int("max_future_timestamp_seconds", self.max_future_timestamp_seconds)
         for field in ("backup_enabled", "auto_recovery", "goldapi_enabled", "goldprice_dev_enabled", "itick_enabled", "mt5_enabled", "signal_approval_enabled", "approval_required_for_paper", "approval_required_for_demo", "approval_required_for_live"):
             setattr(self, field, _coerce_bool(field, getattr(self, field)))
 

@@ -51,6 +51,20 @@ class PipSpecification:
 DEFAULT_PIP_SPECS: Dict[str, PipSpecification] = {
     "BTCUSD": PipSpecification("BTCUSD", pip_size=1.0, point_size=0.01, digits=2),
     "XAUUSD": PipSpecification("XAUUSD", pip_size=0.1, point_size=0.01, digits=2),
+    "XAGUSD": PipSpecification("XAGUSD", pip_size=0.01, point_size=0.001, digits=3),
+}
+
+MODE_STOP_PIPS = {
+    SimulationMode.AGGRESSIVE: (5.0, 15.0),
+    SimulationMode.MODERATE: (10.0, 30.0),
+    SimulationMode.SWING: (40.0, 75.0),
+    SimulationMode.NONE: (0.0, 0.0),
+}
+
+MODE_TRAILING_RULES = {
+    SimulationMode.AGGRESSIVE: (8.0, 5.0),
+    SimulationMode.MODERATE: (15.0, 10.0),
+    SimulationMode.SWING: (25.0, 15.0),
 }
 
 MODE_TARGET_PIPS = {
@@ -88,6 +102,8 @@ class TradeCandidate:
     pnl: Optional[float] = None
     outcome: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    risk_pips: Optional[float] = None
+    reward_pips: Optional[float] = None
 
 
 @dataclass
@@ -231,7 +247,7 @@ def build_trade_candidate(
     *,
     mode: SimulationMode = SimulationMode.MODERATE,
     spec: Optional[PipSpecification] = None,
-    stop_loss_pips: float = 50.0,
+    stop_loss_pips: Optional[float] = None,
     min_score: float = 65.0,
     min_confirmations: int = 3,
     watch_score: float = 50.0,
@@ -276,14 +292,16 @@ def build_trade_candidate(
     reason_code = "NO_DIRECTION"
     if candidate_direction in {"BUY", "SELL"} and entry_value is not None and spec is not None:
         low, high = MODE_TARGET_PIPS[mode]
+        stop_low, stop_high = MODE_STOP_PIPS[mode]
+        effective_stop_pips = float(stop_loss_pips) if stop_loss_pips is not None else stop_low + ((stop_high - stop_low) * (score.score / 100.0))
         target_pips = float(target_pips) if target_pips is not None else low + ((high - low) * (score.score / 100.0))
         target_pips = max(low, min(high, target_pips))
-        stop_delta = spec.price_delta(stop_loss_pips)
+        stop_delta = spec.price_delta(effective_stop_pips)
         target_delta = spec.price_delta(target_pips)
         stop = entry_value - stop_delta if candidate_direction == "BUY" else entry_value + stop_delta
         target = entry_value + target_delta if candidate_direction == "BUY" else entry_value - target_delta
         expected = target_delta
-        rr = target_pips / stop_loss_pips if stop_loss_pips > 0 else None
+        rr = target_pips / effective_stop_pips if effective_stop_pips > 0 else None
         if stop is None or (candidate_direction == "BUY" and stop >= entry_value) or (candidate_direction == "SELL" and stop <= entry_value):
             accepted = False
             rejection = "REJECTED — invalid stop-loss distance"
@@ -308,7 +326,7 @@ def build_trade_candidate(
     return TradeCandidate(
         asset=asset, direction=candidate_direction, confidence=score.score / 100.0,
         mode=mode.value, entry=entry_value, stop_loss=stop, take_profit=target,
-        expected_move=expected, risk_reward=rr, reasons=reasons,
+        expected_move=expected, risk_reward=rr, risk_pips=effective_stop_pips if candidate_direction in {"BUY", "SELL"} and entry_value is not None and spec is not None else None, reward_pips=target_pips if candidate_direction in {"BUY", "SELL"} and entry_value is not None and spec is not None else None, reasons=reasons,
         supporting_timeframes=["5M", "15M", "1H", "4H", "Daily"] if "multi_timeframe" in confirmations else [],
         supporting_indicators=confirmations, signal_score=score.score,
         accepted=accepted, rejection_reason=rejection, status=status, candidate_status=candidate_status,
@@ -316,7 +334,10 @@ def build_trade_candidate(
     )
 
 class TrailingStopManager:
-    def __init__(self, activation_pips: float = 20.0, step_pips: float = 10.0):
+    def __init__(self, activation_pips: float = 20.0, step_pips: float = 10.0, mode: Optional[str] = None):
+        if mode is not None:
+            normalized = SimulationMode.normalize(mode)
+            activation_pips, step_pips = MODE_TRAILING_RULES.get(normalized, (activation_pips, step_pips))
         self.activation_pips = float(activation_pips)
         self.step_pips = float(step_pips)
 
@@ -422,7 +443,8 @@ class SignalOutcomeTracker:
                 record["lowest_favorable_price"] = min(price, _finite(record.get("lowest_favorable_price")) or entry)
             stop = _finite(record.get("current_stop_loss", record.get("stop_loss")))
             if stop is not None:
-                updated = manager.update(entry, price, stop, direction, spec)
+                mode_manager = TrailingStopManager(mode=record.get("mode")) if record.get("mode") else manager
+                updated = mode_manager.update(entry, price, stop, direction, spec)
                 record["current_stop_loss"] = updated
                 record["stop_loss"] = updated
                 if updated != stop:

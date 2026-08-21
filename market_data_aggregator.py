@@ -25,6 +25,26 @@ from configuration_manager import AssetConfig
 
 logger = logging.getLogger(__name__)
 
+def normalize_market_timestamp(raw_time: Any) -> datetime:
+    """Normalize provider timestamps to UTC; naive values are provider UTC."""
+    if isinstance(raw_time, datetime):
+        stamp = raw_time
+    elif isinstance(raw_time, (int, float)):
+        value = float(raw_time)
+        stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
+    elif isinstance(raw_time, str):
+        text = raw_time.strip()
+        try:
+            value = float(text)
+            stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
+        except ValueError:
+            stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    else:
+        raise ValueError("missing timestamp")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(timezone.utc)
+
 @dataclass
 class MarketDataPoint:
     """Single market data point from a provider"""
@@ -612,7 +632,7 @@ class MarketDataAggregator:
         response = requests.get(
             f"{provider['base_url']}{provider['endpoints']['time_series']}",
             params={'symbol': symbol, 'interval': '5min', 'outputsize': 1000,
-                    'apikey': self._get_api_key('twelvedata'), 'format': 'JSON'},
+                    'apikey': self._get_api_key('twelvedata'), 'format': 'JSON', 'timezone': 'UTC'},
             timeout=10,
         )
         response.raise_for_status()
@@ -697,17 +717,10 @@ class MarketDataAggregator:
             try:
                 if not isinstance(row, dict): raise ValueError('row is not an object')
                 raw_time = row.get('timestamp', row.get('datetime', row.get('time', row.get('t'))))
-                if isinstance(raw_time, str):
-                    try:
-                        value = float(raw_time)
-                    except ValueError:
-                        stamp = datetime.fromisoformat(raw_time.replace('Z', '+00:00'))
-                    else:
-                        stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
-                else:
-                    value = float(raw_time)
-                    stamp = datetime.fromtimestamp(value / (1000 if value > 10**11 else 1), timezone.utc)
-                if stamp.tzinfo is None: stamp = stamp.replace(tzinfo=timezone.utc)
+                stamp = normalize_market_timestamp(raw_time)
+                tolerance = int(getattr(self.system_config, 'max_future_timestamp_seconds', 120))
+                if stamp > datetime.now(timezone.utc) + timedelta(seconds=tolerance):
+                    raise ValueError('future timestamp')
                 values = {key: row.get(key, row.get(alias)) for key, alias in (('open','o'),('high','h'),('low','l'),('close','c'),('volume','v'))}
                 if any(values[k] is None for k in ('open','high','low','close')): raise ValueError('missing OHLC')
                 ohlc = {k: float(values[k]) for k in ('open','high','low','close')}; volume = float(values['volume'] or 0.0)

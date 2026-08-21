@@ -83,7 +83,7 @@ def test_candidate_lifecycle_records_trailing_and_outcome(tmp_path):
     assert closed["outcome"] == "WIN"
 def test_minimum_rr_rejects_candidate_with_machine_reason():
     score = calculate_signal_score("BUY", trend="bullish", structure_direction="bullish", mtf_alignment=1.0)
-    candidate = build_trade_candidate("BTCUSD", "BUY", 100.0, score, mode=SimulationMode.MODERATE, min_confirmations=2, minimum_risk_reward=1.5)
+    candidate = build_trade_candidate("BTCUSD", "BUY", 100.0, score, mode=SimulationMode.MODERATE, min_confirmations=2, minimum_risk_reward=1.5, stop_loss_pips=50.0)
     assert not candidate.accepted
     assert candidate.candidate_status == "REJECTED"
     assert candidate.risk_validation == "FAIL"

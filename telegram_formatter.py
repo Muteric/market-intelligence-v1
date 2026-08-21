@@ -143,6 +143,7 @@ class TelegramFormatter:
         }
         asset_state = self.asset_manager.get_asset_state(signal_result.symbol)
         open_count = len(asset_state.open_positions) if asset_state else 0
+        candidate = getattr(ai, "trade_candidate", None)
         allocation = (
             self.portfolio_manager.portfolio_config.base_position_size
             if open_count == 0
@@ -156,7 +157,7 @@ class TelegramFormatter:
         bearish_count = sum(item.trend.startswith("bearish") for item in timeframe_items)
         alignment_count = max(bullish_count, bearish_count)
 
-        def value(obj, name, default="N/A"):
+        def value(obj, name, default="UNAVAILABLE"):
             raw = getattr(obj, name, None) if obj is not None else None
             return raw if raw is not None else default
 
@@ -178,7 +179,7 @@ class TelegramFormatter:
             f"Price Change: {analysis.price_change_percent:+.2f}%",
             "",
             "MARKET INTELLIGENCE",
-            f"Trend: {analysis.trend_direction}",
+            f"Trend: {ai.trend if str(ai.trend).lower() != "neutral" else analysis.trend_direction}",
             f"Momentum: {ai.momentum:.3f}",
             f"Volatility: {analysis.volatility_score}",
             f"Market Regime: {value(value(ai, 'market_regime'), 'regime').value if hasattr(value(value(ai, 'market_regime'), 'regime'), 'value') else value(value(ai, 'market_regime'), 'regime')}",
@@ -302,10 +303,9 @@ class TelegramFormatter:
             f"Execution Reference: ${validation.execution_reference_price:,.2f}" if validation and validation.execution_reference_price is not None else "Execution Reference: UNAVAILABLE",
             f"Position Allocation: {allocation:.0%} of ${asset_state.balance if asset_state else 0.0:,.2f}",
             f"Leverage: 1:{self.portfolio_manager.portfolio_config.leverage:g}",
-            f"Stop Loss: ${value(risk, 'stop_loss') if ai.decision != 'HOLD' else 'UNAVAILABLE'}",
-            f"Take Profit: ${value(risk, 'take_profit_1') if ai.decision != 'HOLD' else 'UNAVAILABLE'}",
-            f"Risk: {value(risk, 'drawdown_risk')} / R:R {value(risk, 'risk_reward_ratio')}",
-            "Action Detail: No position change" if ai.decision == "HOLD" else "Action Detail: Simulated position decision",
+            f"Stop Loss: ${getattr(candidate, 'stop_loss', None) if candidate else 'UNAVAILABLE'}",
+            f"Take Profit: ${getattr(candidate, 'take_profit', None) if candidate else 'UNAVAILABLE'}",
+            f"Risk: {getattr(candidate, 'risk_pips', None) if candidate and getattr(candidate, 'risk_pips', None) is not None else 'UNAVAILABLE'} pips / Reward: {getattr(candidate, 'reward_pips', None) if candidate and getattr(candidate, 'reward_pips', None) is not None else 'UNAVAILABLE'} pips / R:R {getattr(candidate, 'risk_reward', None) if candidate and getattr(candidate, 'risk_reward', None) is not None else 'UNAVAILABLE'}",
             "ILLUSTRATIVE PnL: UNAVAILABLE (no projected PnL calculation is implemented)",
             "",
             "CURRENT PORTFOLIO",

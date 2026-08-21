@@ -503,7 +503,7 @@ class AITradingIntelligenceBot:
                         min_confirmations=(self.config.system.aggressive_min_confirmations if selected_mode == SimulationMode.AGGRESSIVE else self.config.system.slow_min_confirmations if selected_mode == SimulationMode.SWING else self.config.system.moderate_min_confirmations),
                         mode=selected_mode,
                         spec=DEFAULT_PIP_SPECS.get(symbol),
-                        stop_loss_pips=self.config.system.simulation_stop_loss_pips,
+                        stop_loss_pips=(self.config.system.aggressive_min_stop_pips if selected_mode == SimulationMode.AGGRESSIVE else self.config.system.slow_min_stop_pips if selected_mode == SimulationMode.SWING else self.config.system.moderate_min_stop_pips),
                         # thresholds are mode-specific above
                         # confirmation thresholds are mode-specific above
                         watch_score=self.config.system.candidate_watch_score,

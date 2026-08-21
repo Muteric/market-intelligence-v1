@@ -1,4 +1,4 @@
-﻿"""
+"""
 Technical Indicators Calculator for AI Trading Intelligence Bot
 Comprehensive technical analysis with RSI, MACD, EMA, SMA, Bollinger Bands, ATR, ADX, Stochastic, VWAP, OBV, Ichimoku, Fibonacci, and Pivot Points.
 """
@@ -133,9 +133,9 @@ class IchimokuResult:
 class FibonacciResult:
     """Fibonacci retracement result"""
     levels: Dict[str, float]
-    current_price: float
+    current_price: Optional[float]
     nearest_level: str
-    nearest_distance: float
+    nearest_distance: Optional[float]
 
 @dataclass
 class PivotPointsResult:
@@ -547,6 +547,8 @@ class TechnicalIndicators:
         
         if len(prices) < 2 or len(volumes) < 2:
             return OBVResult(None, "UNAVAILABLE", "UNAVAILABLE", False)
+        if not any(float(volume) > 0 for volume in volumes):
+            return OBVResult(None, "UNAVAILABLE", "UNAVAILABLE", False)
         
         # Calculate OBV
         obv_values = [0.0]
@@ -655,7 +657,8 @@ class TechnicalIndicators:
         
         # Calculate Fibonacci levels
         price_range = swing_high - swing_low
-        
+        if price_range <= 0 or not math.isfinite(price_range):
+            return FibonacciResult({}, None, "UNAVAILABLE", None)
         levels = {
             0.0: swing_high,
             0.236: swing_high - (price_range * 0.236),
