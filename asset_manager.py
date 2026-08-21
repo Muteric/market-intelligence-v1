@@ -15,6 +15,7 @@ class AssetSymbol(Enum):
     """Supported asset symbols"""
     BTCUSD = "BTCUSD"
     XAUUSD = "XAUUSD"
+    XAGUSD = "XAGUSD"
 
 class TradeStatus(Enum):
     """Trade status enumeration"""
@@ -149,12 +150,22 @@ class AssetManager:
                 equal_allocation = 1.0 / len(symbols)
                 allocations = {symbol: equal_allocation for symbol in symbols}
         else:
-            symbols = [symbol.value for symbol in AssetSymbol]
+            # Preserve the historical two-asset simulation contract when no
+            # explicit asset configuration is supplied. XAGUSD is an opt-in
+            # market-data symbol and must not silently dilute the shared
+            # portfolio used by existing callers.
+            symbols = [AssetSymbol.BTCUSD.value, AssetSymbol.XAUUSD.value]
             equal_allocation = 1.0 / len(symbols) if symbols else 0.0
             allocations = {symbol: equal_allocation for symbol in symbols}
 
-        for symbol in symbols:
+        for index, symbol in enumerate(symbols):
             balance = self.initial_balance * allocations.get(symbol, 0.0)
+            # Put the rounding remainder on the final asset so portfolio
+            # balances reconcile exactly to the configured account balance.
+            if index == len(symbols) - 1:
+                balance = self.initial_balance - sum(
+                    self.assets[existing].balance for existing in symbols[:index]
+                )
             self.assets[symbol] = AssetState(
                 symbol=symbol,
                 balance=balance,

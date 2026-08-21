@@ -64,6 +64,7 @@ class MT5SymbolMapper:
         return cls({
             "BTCUSD": getattr(config, "mt5_btcusd_symbol", None) or os.getenv("MT5_BTCUSD_SYMBOL", "BTCUSD"),
             "XAUUSD": getattr(config, "mt5_xauusd_symbol", None) or os.getenv("MT5_XAUUSD_SYMBOL", "XAUUSD"),
+            "XAGUSD": getattr(config, "mt5_xagusd_symbol", None) or os.getenv("MT5_XAGUSD_SYMBOL", "XAGUSD"),
         })
 
     def broker_symbol(self, asset: str) -> str:

@@ -1,0 +1,27 @@
+name: Daily Trading Report
+on:
+  schedule:
+    - cron: '5 0 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: trading-report
+  cancel-in-progress: false
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.x'}
+      - run: pip install -r requirements.txt
+      - name: Configure Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+        run: python -c "import os; print('Telegram configured:', 'YES' if os.getenv('TELEGRAM_TOKEN') and os.getenv('TELEGRAM_CHAT_ID') else 'NO')"
+      - run: python reports.py --send-telegram --daily "$(date -u -d 'yesterday' +%F)"

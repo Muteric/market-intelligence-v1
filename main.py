@@ -31,7 +31,9 @@ from ai_decision_engine import AIDecisionEngine
 from trade_execution_simulator import TradeExecutionSimulator
 from reliability_manager import ReliabilityManager
 from mt5_bridge import MT5Connection, MT5MarketData, MT5AccountReader, MT5HealthMonitor, MT5SymbolMapper, PaperExecutionAdapter
-from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, TrailingStopManager, build_trade_candidate, calculate_signal_score, infer_candidate_direction, select_simulation_mode)
+from signal_intelligence import (DEFAULT_PIP_SPECS, SignalOutcomeTracker, SimulationMode, TrailingStopManager, TradeCandidate, build_trade_candidate, calculate_signal_score, infer_candidate_direction, select_simulation_mode)
+from reporting import TradeHistoryStore, TradeOutcomeRecord
+from signal_approval import SignalApprovalService
 
 # Set up logging
 logging.basicConfig(
@@ -89,6 +91,11 @@ class AITradingIntelligenceBot:
         self._telegram_message_times: Dict[str, datetime] = {}
         self.mt5_health_monitor: Optional[MT5HealthMonitor] = None
         self.outcome_tracker = SignalOutcomeTracker(minimum_outcomes=self.config.system.adaptive_learning_min_outcomes)
+        self.trade_history_store = TradeHistoryStore(self.config.system.data_directory)
+        self.signal_approval_service = SignalApprovalService(
+            ttl_seconds=self.config.system.approval_timeout_seconds,
+            allowed_chat_id=self.config.system.telegram_chat_id
+        )
         self.last_trade_candidates: Dict[str, Any] = {}
         
         # Initialize components
@@ -338,6 +345,77 @@ class AITradingIntelligenceBot:
         except Exception as e:
             logger.error(f"Error loading existing data: {e}")
     
+    def _persist_paper_outcome(self, outcome: Dict[str, Any]) -> None:
+        """Write a finalized paper outcome once to the Git-friendly audit history."""
+        try:
+            record = TradeOutcomeRecord(
+                trade_id=str(outcome.get("paper_trade_id") or outcome.get("id")),
+                source="PAPER", asset=outcome["asset"], direction=outcome["direction"],
+                mode=outcome.get("mode"), candidate_id=outcome.get("id"),
+                entry_price=outcome.get("entry"), exit_price=outcome.get("exit_price", outcome.get("exit")),
+                entry_time_utc=outcome.get("entry_timestamp", outcome.get("created_at")),
+                exit_time_utc=outcome.get("exit_timestamp"), initial_stop_loss=outcome.get("initial_stop_loss"),
+                final_stop_loss=outcome.get("current_stop_loss", outcome.get("stop_loss")), take_profit=outcome.get("take_profit"),
+                realized_pips=outcome.get("pips_realized"), realized_pnl=outcome.get("realized_pnl", outcome.get("pnl")),
+                net_pnl=outcome.get("realized_pnl", outcome.get("pnl")), R_multiple=outcome.get("R_multiple"),
+                signal_score=outcome.get("signal_score"), confidence=outcome.get("confidence"),
+                market_regime=outcome.get("conditions", {}).get("regime"), chart_patterns=outcome.get("conditions", {}).get("patterns"),
+                exit_reason=outcome.get("exit_reason"), exit_reason_code=outcome.get("exit_reason"),
+                winning_trade=outcome.get("outcome") == "WIN", losing_trade=outcome.get("outcome") == "LOSS",
+                breakeven_trade=outcome.get("outcome") == "BREAKEVEN",
+            )
+            self.trade_history_store.append(record)
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.error("Paper outcome audit persistence failed: %s", type(exc).__name__)
+    def _candidate_from_approval(self, record: Dict[str, Any]) -> TradeCandidate:
+        """Rehydrate a candidate after a worker or process restart."""
+        return TradeCandidate(
+            asset=record["asset"], direction=record["direction"], mode=record["mode"],
+            entry=record.get("entry"), stop_loss=record.get("stop_loss"),
+            take_profit=record.get("take_profit"), expected_move=None,
+            risk_reward=record.get("risk_reward"), confidence=float(record.get("confidence", 0.0)),
+            signal_score=float(record.get("score", 0.0)), accepted=True,
+            candidate_status="READY", risk_validation="PASS", status="READY",
+            lifecycle_state="AWAITING_APPROVAL",
+        )
+
+    def _open_approved_paper_signals(self, symbol: str, current_price: float) -> None:
+        """Open approved paper candidates only after current-price revalidation."""
+        if not self.config.system.approval_required_for_paper:
+            return
+        spec = DEFAULT_PIP_SPECS.get(symbol)
+        for approval in self.signal_approval_service.approved():
+            if approval.get("asset") != symbol:
+                continue
+            entry = approval.get("entry")
+            if entry is None or spec is None:
+                self.signal_approval_service.mark_invalidated(approval["approval_id"], "INVALID_ENTRY")
+                continue
+            deviation = abs(float(current_price) - float(entry)) / spec.pip_size
+            if deviation > self.config.system.max_entry_deviation_pips:
+                self.signal_approval_service.mark_invalidated(approval["approval_id"], "ENTRY_INVALIDATED")
+                self.signal_approval_service.send_text(
+                    f"⚠️ APPROVED SIGNAL INVALIDATED\n{symbol}\nMarket moved outside acceptable entry range."
+                )
+                continue
+            candidate = self.last_trade_candidates.get(symbol)
+            if candidate is None or getattr(candidate, "entry", None) != entry:
+                candidate = self._candidate_from_approval(approval)
+            paper_trade = self.paper_execution_adapter.open_candidate(candidate, None) if self.paper_execution_adapter else None
+            if paper_trade is None:
+                self.signal_approval_service.mark_invalidated(approval["approval_id"], "PORTFOLIO_OR_RISK_LIMIT")
+                continue
+            record_id = approval.get("candidate_id")
+            if record_id:
+                opened = self.outcome_tracker.open_candidate(record_id)
+                if opened is not None:
+                    opened.update({"paper_trade_id": paper_trade.id, "allocated_capital": paper_trade.position_size, "lifecycle_state": "OPEN"})
+                    self.outcome_tracker._save()
+            self.signal_approval_service.mark_paper_opened(approval["approval_id"], paper_trade.id)
+            self.signal_approval_service.send_text(
+                f"🧪 PAPER TRADE OPENED\n\nTrade ID: {paper_trade.id}\n{symbol} {candidate.direction}\n"
+                f"Entry: {candidate.entry}\nSL: {candidate.stop_loss}\nTP: {candidate.take_profit}"
+            )
     def run_scan(self, execute_trades: bool = True) -> Dict[str, str]:
         """Run a complete scan cycle with enhanced features"""
         logger.info("Starting enhanced scan cycle")
@@ -357,7 +435,10 @@ class AITradingIntelligenceBot:
                 if market_data is None:
                     unavailable_assets.append(symbol)
                     continue
-                current_price, previous_price = market_data                # Update persisted paper positions before evaluating this cycle's candidate.
+                current_price, previous_price = market_data
+                self.signal_approval_service.expire()
+                self._open_approved_paper_signals(symbol, current_price)
+                # Update persisted paper positions before evaluating this cycle's candidate.
                 closed_paper_positions = self.outcome_tracker.update_open_positions(
                     symbol, current_price, DEFAULT_PIP_SPECS.get(symbol),
                     TrailingStopManager(self.config.system.trailing_activation_pips, self.config.system.trailing_step_pips),
@@ -435,16 +516,28 @@ class AITradingIntelligenceBot:
                     if candidate.direction in {"BUY", "SELL", "WATCH"}:
                         record_id = self.outcome_tracker.record(candidate, {"trend": ai_decision.trend, "regime": getattr(getattr(ai_decision.market_regime, "regime", None), "value", getattr(ai_decision.market_regime, "regime", None)), "patterns": pattern_values})
                         if candidate.accepted:
-                            reversed_positions = self.outcome_tracker.close_opposite_positions(symbol, candidate.direction, current_price, DEFAULT_PIP_SPECS[symbol])
-                            for reversed_position in reversed_positions:
-                                reversal_trade_id = reversed_position.get("paper_trade_id")
-                                if reversal_trade_id and self.trade_execution_simulator is not None:
-                                    self.trade_execution_simulator.close_trade(symbol, reversal_trade_id, current_price, "SIGNAL_REVERSAL")
-                            paper_trade = self.paper_execution_adapter.open_candidate(candidate, market_analysis) if self.paper_execution_adapter is not None else None
-                            opened = self.outcome_tracker.open_candidate(record_id)
-                            if opened is not None and paper_trade is not None:
-                                opened.update({"paper_trade_id": paper_trade.id, "allocated_capital": paper_trade.capital_used, "notional_value": paper_trade.notional_value, "leverage": paper_trade.leverage, "quantity": paper_trade.position_size})
-                                self.outcome_tracker._save()
+                            approval_required = self.config.system.signal_approval_enabled and self.config.system.approval_required_for_paper
+                            if approval_required:
+                                pending = self.signal_approval_service.pending()
+                                if len(pending) < self.config.system.max_pending_approvals and not self.signal_approval_service.has_equivalent(candidate):
+                                    approval = self.signal_approval_service.create(candidate, current_price, candidate_id=record_id)
+                                    self.signal_approval_service.send_prompt(approval, self.config.system.telegram_token, self.config.system.telegram_chat_id)
+                                    record = next((item for item in self.outcome_tracker.records if item.get("id") == record_id), None)
+                                    if record is not None:
+                                        record["lifecycle_state"] = "AWAITING_APPROVAL"
+                                        record["status"] = "AWAITING_APPROVAL"
+                                        self.outcome_tracker._save()
+                            else:
+                                reversed_positions = self.outcome_tracker.close_opposite_positions(symbol, candidate.direction, current_price, DEFAULT_PIP_SPECS[symbol])
+                                for reversed_position in reversed_positions:
+                                    reversal_trade_id = reversed_position.get("paper_trade_id")
+                                    if reversal_trade_id and self.trade_execution_simulator is not None:
+                                        self.trade_execution_simulator.close_trade(symbol, reversal_trade_id, current_price, "SIGNAL_REVERSAL")
+                                paper_trade = self.paper_execution_adapter.open_candidate(candidate, market_analysis) if self.paper_execution_adapter is not None else None
+                                opened = self.outcome_tracker.open_candidate(record_id)
+                                if opened is not None and paper_trade is not None:
+                                    opened.update({"paper_trade_id": paper_trade.id, "allocated_capital": paper_trade.capital_used, "notional_value": paper_trade.notional_value, "leverage": paper_trade.leverage, "quantity": paper_trade.position_size})
+                                    self.outcome_tracker._save()
                     signal_result = self.signal_engine.generate_signal(
                         symbol,
                         market_analysis,

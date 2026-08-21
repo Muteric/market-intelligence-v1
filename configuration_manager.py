@@ -128,6 +128,7 @@ class SystemConfig:
     mt5_terminal_path: str = ""
     mt5_btcusd_symbol: str = "BTCUSD"
     mt5_xauusd_symbol: str = "XAUUSD"
+    mt5_xagusd_symbol: str = "XAGUSD"
     xau_max_stale_seconds: int = 60
     max_price_deviation_percent: float = 1.0
     min_valid_providers: int = 1
@@ -156,6 +157,14 @@ class SystemConfig:
     moderate_min_confirmations: int = 3
     slow_min_confirmations: int = 4
     adaptive_learning_min_outcomes: int = 30
+    signal_approval_enabled: bool = True
+    approval_required_for_paper: bool = True
+    approval_required_for_demo: bool = True
+    approval_required_for_live: bool = True
+    approval_timeout_seconds: int = 300
+    max_pending_approvals: int = 3
+    max_entry_deviation_pips: float = 5.0
+    bot_runtime_mode: str = "DESKTOP_TEST"
     def __post_init__(self) -> None:
         self.max_backup_files = _coerce_int("max_backup_files", self.max_backup_files)
         self.goldapi_min_interval_seconds = _coerce_int("goldapi_min_interval_seconds", self.goldapi_min_interval_seconds)
@@ -180,7 +189,10 @@ class SystemConfig:
         self.moderate_min_confirmations = _coerce_int("moderate_min_confirmations", self.moderate_min_confirmations)
         self.slow_min_confirmations = _coerce_int("slow_min_confirmations", self.slow_min_confirmations)
         self.adaptive_learning_min_outcomes = _coerce_int("adaptive_learning_min_outcomes", self.adaptive_learning_min_outcomes)
-        for field in ("backup_enabled", "auto_recovery", "goldapi_enabled", "goldprice_dev_enabled", "itick_enabled", "mt5_enabled"):
+        self.approval_timeout_seconds = _coerce_int("approval_timeout_seconds", self.approval_timeout_seconds)
+        self.max_pending_approvals = _coerce_int("max_pending_approvals", self.max_pending_approvals)
+        self.max_entry_deviation_pips = _coerce_float("max_entry_deviation_pips", self.max_entry_deviation_pips)
+        for field in ("backup_enabled", "auto_recovery", "goldapi_enabled", "goldprice_dev_enabled", "itick_enabled", "mt5_enabled", "signal_approval_enabled", "approval_required_for_paper", "approval_required_for_demo", "approval_required_for_live"):
             setattr(self, field, _coerce_bool(field, getattr(self, field)))
 
 @dataclass
@@ -232,6 +244,9 @@ class ConfigurationManager:
                 max_volatility="high",
                 analysis_interval_minutes=15,
                 allocation_percentage=0.5,
+            ),
+            "XAGUSD": AssetConfig(
+                symbol="XAGUSD", enabled=True, min_confidence=0.5, max_volatility="high", analysis_interval_minutes=15, allocation_percentage=0.0,
             )
         }
         
@@ -249,12 +264,19 @@ class ConfigurationManager:
             mt5_terminal_path=_environment_value('MT5_TERMINAL_PATH', ''),
             mt5_btcusd_symbol=_environment_value('MT5_BTCUSD_SYMBOL', 'BTCUSD'),
             mt5_xauusd_symbol=_environment_value('MT5_XAUUSD_SYMBOL', 'XAUUSD'),
+            mt5_xagusd_symbol=_environment_value('MT5_XAGUSD_SYMBOL', 'XAGUSD'),
             xau_max_stale_seconds=int(_environment_value('XAU_MAX_STALE_SECONDS', '60')),
             max_price_deviation_percent=float(_environment_value('MAX_PRICE_DEVIATION_PERCENT', '1.0')),
             min_valid_providers=int(_environment_value('MIN_VALID_PROVIDERS', '1')),
             price_consensus_method=_environment_value('PRICE_CONSENSUS_METHOD', 'median'),
             execution_mode=_environment_value('EXECUTION_MODE', 'simulation'),
             notification_dedupe_seconds=int(_environment_value('NOTIFICATION_DEDUPE_SECONDS', '900')),
+            signal_approval_enabled=_environment_value('SIGNAL_APPROVAL_ENABLED', 'true').lower() == 'true',
+            approval_required_for_paper=_environment_value('APPROVAL_REQUIRED_FOR_PAPER', 'true').lower() == 'true',
+            approval_timeout_seconds=int(_environment_value('APPROVAL_TIMEOUT_SECONDS', '300')),
+            max_pending_approvals=int(_environment_value('MAX_PENDING_APPROVALS', '3')),
+            max_entry_deviation_pips=float(_environment_value('MAX_ENTRY_DEVIATION_PIPS', '5')),
+            bot_runtime_mode=_environment_value('BOT_RUNTIME_MODE', 'DESKTOP_TEST'),
         )
         
         return AppConfig(
@@ -338,6 +360,7 @@ class ConfigurationManager:
             mt5_terminal_path=system_data.get('mt5_terminal_path', ''),
             mt5_btcusd_symbol=system_data.get('mt5_btcusd_symbol', 'BTCUSD'),
             mt5_xauusd_symbol=system_data.get('mt5_xauusd_symbol', 'XAUUSD'),
+            mt5_xagusd_symbol=system_data.get('mt5_xagusd_symbol', 'XAGUSD'),
             xau_max_stale_seconds=int(system_data.get('xau_max_stale_seconds', 60)),
             max_price_deviation_percent=float(system_data.get('max_price_deviation_percent', 1.0)),
             min_valid_providers=int(system_data.get('min_valid_providers', 1)),

@@ -1,0 +1,25 @@
+name: Monthly Trading Report
+on:
+  schedule:
+    - cron: '15 0 1 * *'
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency: {group: trading-report, cancel-in-progress: false}
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.x'}
+      - run: pip install -r requirements.txt
+      - name: Configure Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+        run: python -c "import os; print('Telegram configured:', 'YES' if os.getenv('TELEGRAM_TOKEN') and os.getenv('TELEGRAM_CHAT_ID') else 'NO')"
+      - run: python -c "from datetime import datetime,timezone,timedelta; d=datetime.now(timezone.utc).replace(day=1)-timedelta(days=1); print(f'MONTH={d:%Y-%m}')" >> "$GITHUB_ENV"
+      - run: python reports.py --send-telegram --monthly "$MONTH"

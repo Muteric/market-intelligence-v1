@@ -1,4 +1,4 @@
-﻿"""
+"""
 Market Data Aggregator for AI Trading Intelligence Bot
 Multi-source market data aggregation with price validation and consensus calculation.
 """
@@ -449,7 +449,11 @@ class MarketDataAggregator:
         return candles or None
     
     async def _fetch_coingecko(self, provider: Dict, symbol: str) -> Optional[MarketDataPoint]:
-        """Fetch data from CoinGecko API"""
+        """Fetch data from CoinGecko API."""
+        # The CoinGecko ``silver`` identifier is not a verified XAGUSD
+        # market quote; do not accept a token price as spot silver.
+        if symbol == "XAGUSD":
+            return None
         # Map symbol to CoinGecko IDs
         coingecko_id = self._map_symbol_to_coingecko(symbol)
         
@@ -1023,7 +1027,8 @@ class MarketDataAggregator:
         """Map symbol to Binance format"""
         mapping = {
             'BTCUSD': 'BTCUSDT',
-            'XAUUSD': 'XAUUSDT'
+            'XAUUSD': 'XAUUSDT',
+            'XAGUSD': 'XAGUSDT'
         }
         return mapping.get(symbol, symbol)
     
@@ -1031,7 +1036,8 @@ class MarketDataAggregator:
         """Map symbol to CoinGecko ID"""
         mapping = {
             'BTCUSD': 'bitcoin',
-            'XAUUSD': 'gold'
+            'XAUUSD': 'gold',
+            'XAGUSD': 'silver'
         }
         return mapping.get(symbol, symbol.lower())
     
@@ -1039,7 +1045,8 @@ class MarketDataAggregator:
         """Map symbol to Alpha Vantage format"""
         mapping = {
             'BTCUSD': 'BTC',
-            'XAUUSD': 'GOLD'
+            'XAUUSD': 'GOLD',
+            'XAGUSD': 'SILVER'
         }
         return mapping.get(symbol, symbol)
     
@@ -1047,7 +1054,8 @@ class MarketDataAggregator:
         """Map symbol to Yahoo Finance format"""
         mapping = {
             'BTCUSD': 'BTC-USD',
-            'XAUUSD': 'XAU-USD'
+            'XAUUSD': 'XAU-USD',
+            'XAGUSD': 'XAG-USD'
         }
         return mapping.get(symbol, symbol)
     
