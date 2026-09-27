@@ -179,7 +179,7 @@ class TelegramFormatter:
             f"Price Change: {analysis.price_change_percent:+.2f}%",
             "",
             "MARKET INTELLIGENCE",
-            f"Trend: {ai.trend if str(ai.trend).lower() != "neutral" else analysis.trend_direction}",
+            f"Trend: {ai.trend if str(ai.trend).lower() != 'neutral' else analysis.trend_direction}",
             f"Momentum: {ai.momentum:.3f}",
             f"Volatility: {analysis.volatility_score}",
             f"Market Regime: {value(value(ai, 'market_regime'), 'regime').value if hasattr(value(value(ai, 'market_regime'), 'regime'), 'value') else value(value(ai, 'market_regime'), 'regime')}",
